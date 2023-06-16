@@ -46,7 +46,6 @@ pub(crate) struct BlockContext {
 
     /// The context's algorithm.
     pub algorithm: &'static Algorithm,
-
     cpu_features: cpu::Features,
 }
 
