@@ -43,12 +43,18 @@ const RING_SRCS: &[(&[&str], &str)] = &[
     (&[], "crypto/mem.c"),
     (&[], "crypto/poly1305/poly1305.c"),
 
-    (&[AARCH64, ARM, X86_64, X86], "crypto/crypto.c"),
-    (&[AARCH64, ARM, X86_64, X86], "crypto/curve25519/curve25519.c"),
-    (&[AARCH64, ARM, X86_64, X86], "crypto/fipsmodule/ec/ecp_nistz.c"),
-    (&[AARCH64, ARM, X86_64, X86], "crypto/fipsmodule/ec/gfp_p256.c"),
-    (&[AARCH64, ARM, X86_64, X86], "crypto/fipsmodule/ec/gfp_p384.c"),
-    (&[AARCH64, ARM, X86_64, X86], "crypto/fipsmodule/ec/p256.c"),
+    // (&[AARCH64, ARM, X86_64, X86], "crypto/crypto.c"),
+    // (&[AARCH64, ARM, X86_64, X86], "crypto/curve25519/curve25519.c"),
+    // (&[AARCH64, ARM, X86_64, X86], "crypto/fipsmodule/ec/ecp_nistz.c"),
+    // (&[AARCH64, ARM, X86_64, X86], "crypto/fipsmodule/ec/gfp_p256.c"),
+    // (&[AARCH64, ARM, X86_64, X86], "crypto/fipsmodule/ec/gfp_p384.c"),
+    // (&[AARCH64, ARM, X86_64, X86], "crypto/fipsmodule/ec/p256.c"),
+    (&[], "crypto/crypto.c"),
+    (&[], "crypto/curve25519/curve25519.c"),
+    // (&[], "crypto/fipsmodule/ec/ecp_nistz.c"),
+    // (&[], "crypto/fipsmodule/ec/gfp_p256.c"),
+    // (&[], "crypto/fipsmodule/ec/gfp_p384.c"),
+    // (&[], "crypto/fipsmodule/ec/p256.c"),
 
     (&[X86_64, X86], "crypto/cpu-intel.c"),
 
@@ -67,7 +73,7 @@ const RING_SRCS: &[(&[&str], &str)] = &[
     (&[X86_64], "crypto/fipsmodule/ec/asm/p256-x86_64-asm.pl"),
     (&[X86_64], "crypto/fipsmodule/modes/asm/aesni-gcm-x86_64.pl"),
     (&[X86_64], "crypto/fipsmodule/modes/asm/ghash-x86_64.pl"),
-    (&[X86_64], "crypto/poly1305/poly1305_vec.c"),
+    (&[], "crypto/poly1305/poly1305_vec.c"),
     (&[X86_64], SHA512_X86_64),
     (&[X86_64], "crypto/cipher_extra/asm/chacha20_poly1305_x86_64.pl"),
 
@@ -279,14 +285,14 @@ const MSVC_OBJ_OPT: &str = "/Fo";
 const MSVC_OBJ_EXT: &str = "obj";
 
 fn main() {
-    if let Ok(package_name) = std::env::var("CARGO_PKG_NAME") {
-        if package_name.starts_with("ring") {
-            ring_build_rs_main();
-            return;
-        }
-    }
+    // if let Ok(package_name) = std::env::var("CARGO_PKG_NAME") {
+    //     if package_name.starts_with("ring") {
+    //         // return;
+    //     }
+    // }
+    ring_build_rs_main();
 
-    pregenerate_asm_main();
+    // pregenerate_asm_main();
 }
 
 fn ring_build_rs_main() {
@@ -310,15 +316,24 @@ fn ring_build_rs_main() {
     let is_debug = is_git && env::var("DEBUG").unwrap() != "false";
 
     if ["wasi", "wasix"].contains(&os.as_str()) {
-        let wasm_libs = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("wasm-libs");
-        if wasm_libs.exists() {
-            let src_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
-            println!("cargo:rustc-link-lib=static=ring_core_dev_");
-            println!("cargo:rustc-link-search=native={}/wasm-libs", src_dir);
-            return;
-        } else {
-            env::set_var("CC", "zig cc -Ofast -s -target wasm32-wasi");
-        }
+        // let wasm_libs = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("wasix-libs");
+        // if wasm_libs.exists() {
+        //     let src_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
+        //     println!("cargo:rustc-link-lib=static=ring_core_dev_");
+        //     println!("cargo:rustc-link-search=native={}/wasix-libs", src_dir);
+        //     return;
+        // } else {
+        //     env::set_var("CC", "zig cc -v -Ofast -s -target wasm32-wasi");
+        // }
+        env::set_var("CC", "/Volumes/Work/Projects/Rust/wasi/wasi-sdk/bin/clang");
+        env::set_var(
+            "AR",
+            "/Volumes/Work/Projects/Rust/wasi/wasi-sdk/bin/llvm-ar",
+        );
+        env::set_var(
+            "RANLIB",
+            "/Volumes/Work/Projects/Rust/wasi/wasi-sdk/bin/llvm-ranlib",
+        );
     }
 
     let target = Target {
@@ -460,6 +475,17 @@ fn build_c_code(target: &Target, pregenerated: PathBuf, out_dir: &Path) {
         "cargo:rustc-link-search=native={}",
         out_dir.to_str().expect("Invalid path")
     );
+}
+
+fn cc_builder() -> cc::Build {
+    let mut c = cc::Build::new();
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
+    if target_os == "wasi" || ["wasi", "wasix"].contains(&target_os.as_str()) {
+        let wasi_sdk_path =
+            &std::env::var("WASI_SDK_DIR").expect("missing environment variable: WASI_SDK_DIR");
+        c.flag(format!("--sysroot={}", wasi_sdk_path).as_str());
+    }
+    c
 }
 
 fn build_library(
