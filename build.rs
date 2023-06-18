@@ -51,12 +51,12 @@ const RING_SRCS: &[(&[&str], &str)] = &[
     // (&[AARCH64, ARM, X86_64, X86], "crypto/fipsmodule/ec/p256.c"),
     (&[], "crypto/crypto.c"),
     (&[], "crypto/curve25519/curve25519.c"),
-    // (&[], "crypto/fipsmodule/ec/ecp_nistz.c"),
-    // (&[], "crypto/fipsmodule/ec/gfp_p256.c"),
-    // (&[], "crypto/fipsmodule/ec/gfp_p384.c"),
-    // (&[], "crypto/fipsmodule/ec/p256.c"),
+    (&[], "crypto/fipsmodule/ec/ecp_nistz.c"),
+    (&[], "crypto/fipsmodule/ec/gfp_p256.c"),
+    (&[], "crypto/fipsmodule/ec/gfp_p384.c"),
+    (&[], "crypto/fipsmodule/ec/p256.c"),
 
-    (&[X86_64, X86], "crypto/cpu-intel.c"),
+    (&[], "crypto/cpu-intel.c"),
 
     (&[X86], "crypto/fipsmodule/aes/asm/aesni-x86.pl"),
     (&[X86], "crypto/fipsmodule/aes/asm/vpaes-x86.pl"),
