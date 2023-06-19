@@ -316,14 +316,18 @@ fn ring_build_rs_main() {
     let is_debug = is_git && env::var("DEBUG").unwrap() != "false";
 
     if ["wasi", "wasix"].contains(&os.as_str()) {
-        // let wasm_libs = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("wasix-libs");
-        // if wasm_libs.exists() {
-        //     let src_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
-        //     println!("cargo:rustc-link-lib=static=ring_core_dev_");
-        //     println!("cargo:rustc-link-search=native={}/wasix-libs", src_dir);
-        //     return;
-        // } else {
-        //     env::set_var("CC", "zig cc -v -Ofast -s -target wasm32-wasi");
+        let wasm_libs = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("wasm-libs");
+        if wasm_libs.exists() {
+            let src_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
+            println!("cargo:rustc-link-lib=static=ring_core_dev_");
+            println!("cargo:rustc-link-search=native={}/wasm-libs", src_dir);
+
+            println!("cargo:rustc-link-lib=static=clang_rt.builtins-wasm32");
+            println!("cargo:rustc-link-search=native={}/wasm-libs", src_dir);
+            return;
+        }
+        // else {
+        // env::set_var("CC", "zig cc -v -Ofast -s -target wasm32-wasi");
         // }
         env::set_var("CC", "/Volumes/Work/Projects/Rust/wasi/wasi-sdk/bin/clang");
         env::set_var(
@@ -334,6 +338,10 @@ fn ring_build_rs_main() {
             "RANLIB",
             "/Volumes/Work/Projects/Rust/wasi/wasi-sdk/bin/llvm-ranlib",
         );
+        env::set_var(
+            "--sysroot",
+            "/Volumes/Work/Projects/Wasmer/wasix-libc/sysroot32",
+        )
     }
 
     let target = Target {
@@ -509,6 +517,16 @@ fn build_library(
 
     let mut c = cc::Build::new();
 
+    c.flag(
+        format!(
+            "--sysroot={}",
+            "/Volumes/Work/Projects/Wasmer/wasix-libc/sysroot32"
+        )
+        .as_str(),
+    );
+    // which cc is being used
+    dbg!(std::env::var("CC").unwrap_or_else(|_| "cc".to_string()));
+
     for f in LD_FLAGS {
         let _ = c.flag(&f);
     }
@@ -577,6 +595,13 @@ fn cc(
     let is_musl = target.env.starts_with("musl");
 
     let mut c = cc::Build::new();
+    c.flag(
+        format!(
+            "--sysroot={}",
+            "/Volumes/Work/Projects/Wasmer/wasix-libc/sysroot32"
+        )
+        .as_str(),
+    );
     let _ = c.include("include");
     let _ = c.include(include_dir);
     match ext {
