@@ -314,7 +314,7 @@ name = "ring"
 [dependencies]
 untrusted = { version = "0.7.1" }
 
-[target.'cfg(any(target_os = "wasi", target_os = "wasix"))'.dependencies]
+[target.'cfg(target_os = "wasi")'.dependencies]
 getrandom = { version = "0.2.9" }
 wasi = { version = "0.11.0" }
 
