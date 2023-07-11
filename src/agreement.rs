@@ -60,6 +60,8 @@
 // The "NSA Guide" steps here are from from section 3.1, "Ephemeral Unified
 // Model."
 
+use alloc::boxed::Box;
+
 use crate::{cpu, debug, ec, error, rand};
 
 pub use crate::ec::{
@@ -246,6 +248,7 @@ impl<B: AsRef<[u8]>> UnparsedPublicKey<B> {
 /// key material from the key agreement operation and then returns what `kdf`
 /// returns.
 #[inline]
+#[cfg(not(feature = "old_agree_ephemeral"))]
 pub fn agree_ephemeral<B: AsRef<[u8]>, R>(
     my_private_key: EphemeralPrivateKey,
     peer_public_key: &UnparsedPublicKey<B>,
@@ -254,6 +257,23 @@ pub fn agree_ephemeral<B: AsRef<[u8]>, R>(
     let peer_public_key = UnparsedPublicKey {
         algorithm: peer_public_key.algorithm,
         bytes: peer_public_key.bytes.as_ref(),
+    };
+    agree_ephemeral_(my_private_key, peer_public_key, kdf)
+}
+
+#[inline]
+#[cfg(feature = "old_agree_ephemeral")]
+pub fn agree_ephemeral<B: AsRef<[u8]>, R>(
+    my_private_key: EphemeralPrivateKey,
+    peer_public_key: &UnparsedPublicKey<B>,
+    kdf: impl FnOnce() -> R,
+) -> Result<R, error::Unspecified> {
+    let peer_public_key = UnparsedPublicKey {
+        algorithm: peer_public_key.algorithm,
+        bytes: peer_public_key.bytes.as_ref(),
+    };
+    let kdf = move |_| {
+        kdf()
     };
     agree_ephemeral_(my_private_key, peer_public_key, kdf)
 }
