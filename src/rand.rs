@@ -177,7 +177,7 @@ impl crate::sealed::Sealed for SystemRandom {}
         any(target_os = "android", target_os = "linux"),
         not(feature = "dev_urandom_fallback")
     ),
-    target_os = "wasi",
+    any(target_os = "wasi", target_family = "wasm"),
     windows
 ))]
 use self::sysrand::fill as fill_impl;
