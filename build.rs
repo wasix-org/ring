@@ -54,8 +54,7 @@ const RING_SRCS: &[(&[&str], &str)] = &[
     (&[], "crypto/poly1305/poly1305.c"),
     
     (&[AARCH64, ARM, X86_64, X86, WASM32,WASM64, WASI], "crypto/crypto.c"),
-    // (&[X86_64, X86, WASM32, WASM64, WASI], "crypto/cpu_intel.c"),
-    (&[], "crypto/cpu_intel.c"),
+    (&[X86_64,X86], "crypto/cpu_intel.c"),
 
     (&[X86], "crypto/fipsmodule/aes/asm/aesni-x86.pl"),
     (&[X86], "crypto/fipsmodule/aes/asm/vpaes-x86.pl"),
