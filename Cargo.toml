@@ -170,6 +170,7 @@ untrusted = { version = "0.7.1" }
 getrandom = { version = "0.2.9" }
 
 [target.'cfg(target_os = "wasi")'.dependencies]
+getrandom = { version = "0.2.9" }
 wasi = { version = "0.11.0" }
 
 [target.'cfg(any(target_arch = "x86",target_arch = "x86_64", all(any(target_arch = "aarch64", target_arch = "arm"), any(target_os = "android", target_os = "fuchsia", target_os = "linux", target_os = "windows"))))'.dependencies]
@@ -177,6 +178,9 @@ spin = { version = "0.9.2", default-features = false, features = ["once"] }
 
 [target.'cfg(any(target_os = "android", target_os = "linux"))'.dependencies]
 libc = { version = "0.2.100", default-features = false }
+once_cell = { version = "1.5.2", default-features = false, features = [
+    "std",
+], optional = true }
 
 [target.'cfg(all(target_arch = "aarch64", target_os = "windows"))'.dependencies]
 winapi = { version = "0.3.9", default-features = false, features = [
@@ -191,6 +195,7 @@ wasm-bindgen-test = { version = "0.3.26", default-features = false }
 [target.'cfg(any(unix, windows))'.dev-dependencies]
 libc = { version = "0.2.100", default-features = false }
 
+
 [build-dependencies]
 cc = { version = "1.0.69", default-features = false }
 
@@ -201,7 +206,7 @@ criterion = { version = "0.4", default-features = false }
 # These features are documented in the top-level module's documentation.
 default = ["alloc", "dev_urandom_fallback", "wasm32_c"]
 alloc = []
-dev_urandom_fallback = []
+dev_urandom_fallback = ["once_cell"]
 slow_tests = []
 std = ["alloc"]
 test_logging = []
