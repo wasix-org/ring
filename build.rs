@@ -30,11 +30,6 @@ const X86: &str = "x86";
 const X86_64: &str = "x86_64";
 const AARCH64: &str = "aarch64";
 const ARM: &str = "arm";
-const WASM32: &str = "wasm32";
-const WASM64: &str = "wasm64";
-const WASI: &str = "wasi";
-const WASM32_WASI: &str = "wasm32-wasi";
-const WASMER_WASI: &str = "wasm32-wasmer-wasi";
 
 #[rustfmt::skip]
 const RING_SRCS: &[(&[&str], &str)] = &[
@@ -50,9 +45,9 @@ const RING_SRCS: &[(&[&str], &str)] = &[
     (&[], "crypto/mem.c"),
     (&[], "crypto/poly1305/poly1305.c"),
 
-    (&[AARCH64, ARM, X86_64, X86, WASM32,WASM64, WASI, WASM32_WASI,WASMER_WASI], "crypto/crypto.c"),
+    (&[AARCH64, ARM, X86_64, X86], "crypto/crypto.c"),
 
-    (&[X86_64, X86], "crypto/cpu-intel.c"),
+    (&[X86_64, X86], "crypto/cpu_intel.c"),
 
     (&[X86], "crypto/fipsmodule/aes/asm/aesni-x86.pl"),
     (&[X86], "crypto/fipsmodule/aes/asm/vpaes-x86.pl"),
@@ -325,19 +320,6 @@ fn ring_build_rs_main() {
         env.starts_with("musl")
     };
 
-    if [WASI].contains(&os.as_str()) {
-        let wasm_libs = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("wasm-libs");
-        if wasm_libs.exists() {
-            let src_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
-            println!("cargo:rustc-link-lib=static=ring_core_dev_");
-            println!("cargo:rustc-link-search=native={}/wasm-libs", src_dir);
-
-            println!("cargo:rustc-link-lib=static=clang_rt.builtins-wasm32");
-            println!("cargo:rustc-link-search=native={}/wasm-libs", src_dir);
-            return;
-        }
-    }
-
     let is_git = std::fs::metadata(".git").is_ok();
 
     // Published builds are always built in release mode.
@@ -446,12 +428,6 @@ fn build_c_code(
     ring_core_prefix: &str,
     use_pregenerated: bool,
 ) {
-    #[cfg(not(feature = "wasm32_c"))]
-    {
-        if target.arch == WASM32 {
-            return;
-        }
-    }
     println!("cargo:rustc-env=RING_CORE_PREFIX={}", ring_core_prefix);
 
     let asm_target = ASM_TARGETS.iter().find(|asm_target| {
@@ -518,19 +494,6 @@ fn build_c_code(
     );
 }
 
-fn cc_builder() -> cc::Build {
-    let mut c = cc::Build::new();
-    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
-    if target_os == "wasi" {
-        let wasi_sdk_path =
-            &std::env::var("WASI_SDK_DIR").expect("missing environment variable: WASI_SDK_DIR");
-        c.compiler(format!("{}/bin/clang", wasi_sdk_path).as_str());
-        c.archiver(format!("{}/bin/llvm-ar", wasi_sdk_path).as_str());
-        c.flag(format!("--sysroot={}/share/wasi-sysroot", wasi_sdk_path).as_str());
-    }
-    c
-}
-
 fn build_library(
     target: &Target,
     out_dir: &Path,
@@ -548,7 +511,7 @@ fn build_library(
     // Rebuild the library if necessary.
     let lib_path = PathBuf::from(out_dir).join(format!("lib{}.a", lib_name));
 
-    let mut c = cc_builder();
+    let mut c = cc::Build::new();
 
     for f in LD_FLAGS {
         let _ = c.flag(f);
@@ -608,7 +571,7 @@ fn obj_path(out_dir: &Path, src: &Path) -> PathBuf {
 }
 
 fn cc(file: &Path, ext: &str, target: &Target, include_dir: &Path, out_file: &Path) -> Command {
-    let mut c = cc_builder();
+    let mut c = cc::Build::new();
 
     // FIXME: On Windows AArch64 we currently must use Clang to compile C code
     if target.os == WINDOWS && target.arch == AARCH64 && !c.get_compiler().is_like_clang() {
@@ -873,9 +836,7 @@ fn ring_core_prefix() -> String {
         name + "_core_" + &version.replace(&['-', '.'][..], "_")
     };
 
-    dbg!(&links, &computed);
-
-    // assert_eq!(links, computed);
+    assert_eq!(links, computed);
 
     links + "_"
 }
