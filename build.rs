@@ -52,7 +52,7 @@ const RING_SRCS: &[(&[&str], &str)] = &[
 
     (&[AARCH64, ARM, X86_64, X86, WASM32,WASM64, WASI, WASM32_WASI,WASMER_WASI], "crypto/crypto.c"),
 
-    (&[X86_64, X86], "crypto/cpu_intel.c"),
+    (&[X86_64, X86], "crypto/cpu-intel.c"),
 
     (&[X86], "crypto/fipsmodule/aes/asm/aesni-x86.pl"),
     (&[X86], "crypto/fipsmodule/aes/asm/vpaes-x86.pl"),
@@ -872,6 +872,8 @@ fn ring_core_prefix() -> String {
         let version = std::env::var("CARGO_PKG_VERSION").unwrap();
         name + "_core_" + &version.replace(&['-', '.'][..], "_")
     };
+
+    dbg!(&links, &computed);
 
     // assert_eq!(links, computed);
 
