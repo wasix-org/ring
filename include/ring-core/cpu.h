@@ -62,6 +62,7 @@
 #define OPENSSL_HEADER_CPU_H
 
 #include <ring-core/base.h>
+#include <ring-core/cpu.h>
 
 // Runtime CPU feature support
 
