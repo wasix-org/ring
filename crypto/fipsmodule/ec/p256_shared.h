@@ -23,7 +23,8 @@
 
 #include "../bn/internal.h"
 
-#if !defined(OPENSSL_NO_ASM) && defined(OPENSSL_X86_64) && \
+#if !defined(OPENSSL_NO_ASM) && \
+    (defined(OPENSSL_X86_64) || defined(OPENSSL_AARCH64)) && \
     !defined(OPENSSL_SMALL)
 # define OPENSSL_USE_NISTZ256
 #endif
@@ -54,4 +55,4 @@ static inline void p256_scalar_bytes_from_limbs(
   bytes_out[32] = 0;
 }
 
-#endif
+#endif /* !defined(OPENSSL_USE_NISTZ256) */

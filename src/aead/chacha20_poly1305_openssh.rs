@@ -32,11 +32,9 @@
 use super::{
     chacha::{self, *},
     chacha20_poly1305::derive_poly1305_key,
-    cpu, poly1305,
-    polyfill::ChunksFixed,
-    Nonce, Tag,
+    cpu, poly1305, Nonce, Tag,
 };
-use crate::{constant_time, endian::*, error};
+use crate::{constant_time, error};
 
 /// A key for sealing packets.
 pub struct SealingKey {
@@ -47,7 +45,7 @@ impl SealingKey {
     /// Constructs a new `SealingKey`.
     pub fn new(key_material: &[u8; KEY_LEN]) -> Self {
         Self {
-            key: Key::new(key_material, cpu::features()),
+            key: Key::new(key_material),
         }
     }
 
@@ -64,6 +62,7 @@ impl SealingKey {
         plaintext_in_ciphertext_out: &mut [u8],
         tag_out: &mut [u8; TAG_LEN],
     ) {
+        let cpu_features = cpu::features();
         let mut counter = make_counter(sequence_number);
         let poly_key = derive_poly1305_key(&self.key.k_2, counter.increment());
 
@@ -79,7 +78,7 @@ impl SealingKey {
                 .encrypt_in_place(counter, data_and_padding_in_out);
         }
 
-        let Tag(tag) = poly1305::sign(poly_key, plaintext_in_ciphertext_out);
+        let Tag(tag) = poly1305::sign(poly_key, plaintext_in_ciphertext_out, cpu_features);
         tag_out.copy_from_slice(tag.as_ref());
     }
 }
@@ -93,7 +92,7 @@ impl OpeningKey {
     /// Constructs a new `OpeningKey`.
     pub fn new(key_material: &[u8; KEY_LEN]) -> Self {
         Self {
-            key: Key::new(key_material, cpu::features()),
+            key: Key::new(key_material),
         }
     }
 
@@ -150,23 +149,20 @@ struct Key {
 }
 
 impl Key {
-    fn new(key_material: &[u8; KEY_LEN], cpu_features: cpu::Features) -> Self {
+    fn new(key_material: &[u8; KEY_LEN]) -> Self {
         // The first half becomes K_2 and the second half becomes K_1.
-        let &[k_2, k_1]: &[[u8; chacha::KEY_LEN]; 2] = key_material.chunks_fixed();
+        let (k_2, k_1) = key_material.split_at(chacha::KEY_LEN);
         Self {
-            k_1: chacha::Key::new(k_1, cpu_features),
-            k_2: chacha::Key::new(k_2, cpu_features),
+            k_1: chacha::Key::new(k_1.try_into().unwrap()),
+            k_2: chacha::Key::new(k_2.try_into().unwrap()),
         }
     }
 }
 
 fn make_counter(sequence_number: u32) -> Counter {
-    let nonce = [
-        BigEndian::ZERO,
-        BigEndian::ZERO,
-        BigEndian::from(sequence_number),
-    ];
-    Counter::zero(Nonce::assume_unique_for_key(*(nonce.as_byte_array())))
+    let [s0, s1, s2, s3] = sequence_number.to_be_bytes();
+    let nonce = [0, 0, 0, 0, 0, 0, 0, 0, s0, s1, s2, s3];
+    Counter::zero(Nonce::assume_unique_for_key(nonce))
 }
 
 /// The length of key.
@@ -179,6 +175,6 @@ pub const PACKET_LENGTH_LEN: usize = 4; // 32 bits
 pub const TAG_LEN: usize = super::TAG_LEN;
 
 fn verify(key: poly1305::Key, msg: &[u8], tag: &[u8; TAG_LEN]) -> Result<(), error::Unspecified> {
-    let Tag(calculated_tag) = poly1305::sign(key, msg);
+    let Tag(calculated_tag) = poly1305::sign(key, msg, cpu::features());
     constant_time::verify_slices_are_equal(calculated_tag.as_ref(), tag)
 }

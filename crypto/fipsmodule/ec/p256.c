@@ -37,18 +37,22 @@
 #pragma warning(disable: 4267)
 #endif
 
-#if defined(__GNUC__)
+#if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic ignored "-Wconversion"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #endif
 
-// MSVC does not implement uint128_t, and crashes with intrinsics
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic ignored "-Winline"
+#endif
+
 #if defined(BORINGSSL_HAS_UINT128)
 #if defined(__GNUC__)
 #pragma GCC diagnostic ignored "-Wpedantic"
 #endif
-#define BORINGSSL_NISTP256_64BIT 1
 #include "../../../third_party/fiat/p256_64.h"
+#elif defined(OPENSSL_64_BIT)
+#include "../../../third_party/fiat/p256_64_msvc.h"
 #else
 #include "../../../third_party/fiat/p256_32.h"
 #endif
@@ -56,7 +60,7 @@
 
 // utility functions, handwritten
 
-#if defined(BORINGSSL_NISTP256_64BIT)
+#if defined(OPENSSL_64_BIT)
 #define FIAT_P256_NLIMBS 4
 typedef uint64_t fiat_p256_limb_t;
 typedef uint64_t fiat_p256_felem[FIAT_P256_NLIMBS];
@@ -91,6 +95,21 @@ static void fiat_p256_cmovznz(fiat_p256_limb_t out[FIAT_P256_NLIMBS],
                               const fiat_p256_limb_t nz[FIAT_P256_NLIMBS]) {
   fiat_p256_selectznz(out, !!t, z, nz);
 }
+
+static void fiat_p256_from_words(fiat_p256_felem out,
+                                 const Limb in[32 / sizeof(BN_ULONG)]) {
+  // Typically, |BN_ULONG| and |fiat_p256_limb_t| will be the same type, but on
+  // 64-bit platforms without |uint128_t|, they are different. However, on
+  // little-endian systems, |uint64_t[4]| and |uint32_t[8]| have the same
+  // layout.
+  OPENSSL_memcpy(out, in, 32);
+}
+
+static void fiat_p256_to_words(Limb out[32 / sizeof(BN_ULONG)], const fiat_p256_felem in) {
+  // See |fiat_p256_from_words|.
+  OPENSSL_memcpy(out, in, 32);
+}
+
 
 // Group operations
 // ----------------
@@ -250,7 +269,7 @@ static void fiat_p256_point_add(fiat_p256_felem x3, fiat_p256_felem y3,
   fiat_p256_limb_t is_nontrivial_double = constant_time_is_zero_w(xneq | yneq) &
                                           ~constant_time_is_zero_w(z1nz) &
                                           ~constant_time_is_zero_w(z2nz);
-  if (is_nontrivial_double) {
+  if (constant_time_declassify_w(is_nontrivial_double)) {
     fiat_p256_point_double(x3, y3, z3, x1, y1, z1);
     return;
   }
@@ -322,30 +341,32 @@ static void fiat_p256_select_point(const fiat_p256_limb_t idx, size_t size,
 }
 
 // fiat_p256_get_bit returns the |i|th bit in |in|
-static crypto_word fiat_p256_get_bit(const uint8_t *in, int i) {
+static crypto_word_t fiat_p256_get_bit(const Limb in[P256_LIMBS], int i) {
   if (i < 0 || i >= 256) {
     return 0;
   }
-  return (in[i >> 3] >> (i & 7)) & 1;
+#if defined(OPENSSL_64_BIT)
+  OPENSSL_STATIC_ASSERT(sizeof(Limb) == 8, "BN_ULONG was not 64-bit");
+  return (in[i >> 6] >> (i & 63)) & 1;
+#else
+  OPENSSL_STATIC_ASSERT(sizeof(Limb) == 4, "BN_ULONG was not 32-bit");
+  return (in[i >> 5] >> (i & 31)) & 1;
+#endif
 }
 
-void p256_point_mul(P256_POINT *r, const Limb scalar[P256_LIMBS],
-                        const Limb p_x[P256_LIMBS], const Limb p_y[P256_LIMBS]) {
+void p256_point_mul(Limb r[3][P256_LIMBS], const Limb scalar[P256_LIMBS],
+                    const Limb p_x[P256_LIMBS], const Limb p_y[P256_LIMBS]) {
   debug_assert_nonsecret(r != NULL);
   debug_assert_nonsecret(scalar != NULL);
   debug_assert_nonsecret(p_x != NULL);
   debug_assert_nonsecret(p_y != NULL);
 
-  P256_SCALAR_BYTES scalar_bytes;
-  p256_scalar_bytes_from_limbs(scalar_bytes, scalar);
-
   fiat_p256_felem p_pre_comp[17][3];
   OPENSSL_memset(&p_pre_comp, 0, sizeof(p_pre_comp));
-
   // Precompute multiples.
-  limbs_copy(&p_pre_comp[1][0][0], p_x, P256_LIMBS);
-  limbs_copy(&p_pre_comp[1][1][0], p_y, P256_LIMBS);
-  limbs_copy(&p_pre_comp[1][2][0], fiat_p256_one, P256_LIMBS);
+  fiat_p256_from_words(p_pre_comp[1][0], p_x);
+  fiat_p256_from_words(p_pre_comp[1][1], p_y);
+  fiat_p256_copy(p_pre_comp[1][2], fiat_p256_one);
 
   for (size_t j = 2; j <= 16; ++j) {
     if (j & 1) {
@@ -373,21 +394,21 @@ void p256_point_mul(P256_POINT *r, const Limb scalar[P256_LIMBS],
 
     // do other additions every 5 doublings
     if (i % 5 == 0) {
-      crypto_word bits = fiat_p256_get_bit(scalar_bytes, i + 4) << 5;
-      bits |= fiat_p256_get_bit(scalar_bytes, i + 3) << 4;
-      bits |= fiat_p256_get_bit(scalar_bytes, i + 2) << 3;
-      bits |= fiat_p256_get_bit(scalar_bytes, i + 1) << 2;
-      bits |= fiat_p256_get_bit(scalar_bytes, i) << 1;
-      bits |= fiat_p256_get_bit(scalar_bytes, i - 1);
-      crypto_word sign, digit;
+      crypto_word_t bits = fiat_p256_get_bit(scalar, i + 4) << 5;
+      bits |= fiat_p256_get_bit(scalar, i + 3) << 4;
+      bits |= fiat_p256_get_bit(scalar, i + 2) << 3;
+      bits |= fiat_p256_get_bit(scalar, i + 1) << 2;
+      bits |= fiat_p256_get_bit(scalar, i) << 1;
+      bits |= fiat_p256_get_bit(scalar, i - 1);
+      crypto_word_t sign, digit;
       recode_scalar_bits(&sign, &digit, bits);
 
       // select the point to add or subtract, in constant time.
-      fiat_p256_select_point(digit, 17,
+      fiat_p256_select_point((fiat_p256_limb_t)digit, 17,
         RING_CORE_POINTLESS_ARRAY_CONST_CAST((const fiat_p256_felem(*)[3]))p_pre_comp,
         tmp);
       fiat_p256_opp(ftmp, tmp[1]);  // (X, -Y, Z) is the negative point.
-      fiat_p256_cmovznz(tmp[1], sign, tmp[1], ftmp);
+      fiat_p256_cmovznz(tmp[1], (fiat_p256_limb_t)sign, tmp[1], ftmp);
 
       if (!skip) {
         fiat_p256_point_add(nq[0], nq[1], nq[2], nq[0], nq[1], nq[2],
@@ -401,15 +422,12 @@ void p256_point_mul(P256_POINT *r, const Limb scalar[P256_LIMBS],
     }
   }
 
-  limbs_copy(r->X, nq[0], P256_LIMBS);
-  limbs_copy(r->Y, nq[1], P256_LIMBS);
-  limbs_copy(r->Z, nq[2], P256_LIMBS);
+  fiat_p256_to_words(r[0], nq[0]);
+  fiat_p256_to_words(r[1], nq[1]);
+  fiat_p256_to_words(r[2], nq[2]);
 }
 
-void p256_point_mul_base(P256_POINT *r, const Limb scalar[P256_LIMBS]) {
-  P256_SCALAR_BYTES scalar_bytes;
-  p256_scalar_bytes_from_limbs(scalar_bytes, scalar);
-
+void p256_point_mul_base(Limb r[3][P256_LIMBS], const Limb scalar[P256_LIMBS]) {
   // Set nq to the point at infinity.
   fiat_p256_felem nq[3] = {{0}, {0}, {0}}, tmp[3];
 
@@ -420,12 +438,13 @@ void p256_point_mul_base(P256_POINT *r, const Limb scalar[P256_LIMBS]) {
     }
 
     // First, look 32 bits upwards.
-    crypto_word bits = fiat_p256_get_bit(scalar_bytes, i + 224) << 3;
-    bits |= fiat_p256_get_bit(scalar_bytes, i + 160) << 2;
-    bits |= fiat_p256_get_bit(scalar_bytes, i + 96) << 1;
-    bits |= fiat_p256_get_bit(scalar_bytes, i + 32);
+    crypto_word_t bits = fiat_p256_get_bit(scalar, i + 224) << 3;
+    bits |= fiat_p256_get_bit(scalar, i + 160) << 2;
+    bits |= fiat_p256_get_bit(scalar, i + 96) << 1;
+    bits |= fiat_p256_get_bit(scalar, i + 32);
     // Select the point to add, in constant time.
-    fiat_p256_select_point_affine(bits, 15, fiat_p256_g_pre_comp[1], tmp);
+    fiat_p256_select_point_affine((fiat_p256_limb_t)bits, 15,
+                                  fiat_p256_g_pre_comp[1], tmp);
 
     if (!skip) {
       fiat_p256_point_add(nq[0], nq[1], nq[2], nq[0], nq[1], nq[2],
@@ -438,57 +457,83 @@ void p256_point_mul_base(P256_POINT *r, const Limb scalar[P256_LIMBS]) {
     }
 
     // Second, look at the current position.
-    bits = fiat_p256_get_bit(scalar_bytes, i + 192) << 3;
-    bits |= fiat_p256_get_bit(scalar_bytes, i + 128) << 2;
-    bits |= fiat_p256_get_bit(scalar_bytes, i + 64) << 1;
-    bits |= fiat_p256_get_bit(scalar_bytes, i);
+    bits = fiat_p256_get_bit(scalar, i + 192) << 3;
+    bits |= fiat_p256_get_bit(scalar, i + 128) << 2;
+    bits |= fiat_p256_get_bit(scalar, i + 64) << 1;
+    bits |= fiat_p256_get_bit(scalar, i);
     // Select the point to add, in constant time.
-    fiat_p256_select_point_affine(bits, 15, fiat_p256_g_pre_comp[0], tmp);
+    fiat_p256_select_point_affine((fiat_p256_limb_t)bits, 15,
+                                  fiat_p256_g_pre_comp[0], tmp);
     fiat_p256_point_add(nq[0], nq[1], nq[2], nq[0], nq[1], nq[2], 1 /* mixed */,
                         tmp[0], tmp[1], tmp[2]);
   }
 
-  limbs_copy(r->X, nq[0], P256_LIMBS);
-  limbs_copy(r->Y, nq[1], P256_LIMBS);
-  limbs_copy(r->Z, nq[2], P256_LIMBS);
+  fiat_p256_to_words(r[0], nq[0]);
+  fiat_p256_to_words(r[1], nq[1]);
+  fiat_p256_to_words(r[2], nq[2]);
 }
 
 void p256_mul_mont(Limb r[P256_LIMBS], const Limb a[P256_LIMBS],
-                       const Limb b[P256_LIMBS]) {
-  fiat_p256_mul(r, a, b);
+                   const Limb b[P256_LIMBS]) {
+  fiat_p256_felem a_, b_;
+  fiat_p256_from_words(a_, a);
+  fiat_p256_from_words(b_, b);
+  fiat_p256_mul(a_, a_, b_);
+  fiat_p256_to_words(r, a_);
 }
 
 void p256_sqr_mont(Limb r[P256_LIMBS], const Limb a[P256_LIMBS]) {
-  fiat_p256_square(r, a);
+  fiat_p256_felem x;
+  fiat_p256_from_words(x, a);
+  fiat_p256_square(x, x);
+  fiat_p256_to_words(r, x);
 }
 
-void p256_point_add(P256_POINT *r, const P256_POINT *a, const P256_POINT *b) {
-  fiat_p256_point_add(r->X, r->Y, r->Z,
-                      a->X, a->Y, a->Z,
-                      0,
-                      b->X, b->Y, b->Z);
+void p256_point_add(Limb r[3][P256_LIMBS], const Limb a[3][P256_LIMBS],
+                    const Limb b[3][P256_LIMBS]) {
+  fiat_p256_felem x1, y1, z1, x2, y2, z2;
+  fiat_p256_from_words(x1, a[0]);
+  fiat_p256_from_words(y1, a[1]);
+  fiat_p256_from_words(z1, a[2]);
+  fiat_p256_from_words(x2, b[0]);
+  fiat_p256_from_words(y2, b[1]);
+  fiat_p256_from_words(z2, b[2]);
+  fiat_p256_point_add(x1, y1, z1, x1, y1, z1, 0 /* both Jacobian */, x2, y2,
+                      z2);
+  fiat_p256_to_words(r[0], x1);
+  fiat_p256_to_words(r[1], y1);
+  fiat_p256_to_words(r[2], z1);
 }
 
-void p256_point_double(P256_POINT *r, const P256_POINT *a) {
-  fiat_p256_point_double(r->X, r->Y, r->Z,
-                         a->X, a->Y, a->Z);
+void p256_point_double(Limb r[3][P256_LIMBS], const Limb a[3][P256_LIMBS]) {
+  fiat_p256_felem x, y, z;
+  fiat_p256_from_words(x, a[0]);
+  fiat_p256_from_words(y, a[1]);
+  fiat_p256_from_words(z, a[2]);
+  fiat_p256_point_double(x, y, z, x, y, z);
+  fiat_p256_to_words(r[0], x);
+  fiat_p256_to_words(r[1], y);
+  fiat_p256_to_words(r[2], z);
 }
 
 // For testing only.
-void p256_point_add_affine(P256_POINT *r, const P256_POINT *a,
-                               const BN_ULONG b[P256_LIMBS * 2]) {
-  const Limb *b_x = &b[0];
-  const Limb *b_y = &b[P256_LIMBS];
-  fiat_p256_felem b_z = {0};
-  crypto_word b_is_inf = constant_time_select_w(
-      LIMBS_are_zero(b_x, P256_LIMBS), LIMBS_are_zero(b_y, P256_LIMBS), 0);
-  fiat_p256_cmovznz(b_z, constant_time_is_zero_w(b_is_inf), b_z, fiat_p256_one);
-  fiat_p256_point_add(r->X, r->Y, r->Z,
-                      a->X, a->Y, a->Z,
-                      1,
-                      b_x, b_y, b_z);
+void p256_point_add_affine(Limb r[3][P256_LIMBS], const Limb a[3][P256_LIMBS],
+                           const Limb b[2][P256_LIMBS]) {
+  fiat_p256_felem x1, y1, z1, x2, y2;
+  fiat_p256_from_words(x1, a[0]);
+  fiat_p256_from_words(y1, a[1]);
+  fiat_p256_from_words(z1, a[2]);
+  fiat_p256_from_words(x2, b[0]);
+  fiat_p256_from_words(y2, b[1]);
+
+  fiat_p256_felem z2 = {0};
+  fiat_p256_cmovznz(z2, fiat_p256_nz(x2) & fiat_p256_nz(y2), z2, fiat_p256_one);
+
+  fiat_p256_point_add(x1, y1, z1, x1, y1, z1, 1 /* mixed */, x2, y2, z2);
+
+  fiat_p256_to_words(r[0], x1);
+  fiat_p256_to_words(r[1], y1);
+  fiat_p256_to_words(r[2], z1);
 }
 
-#undef BORINGSSL_NISTP256_64BIT
-
-#endif /* !defined(OPENSSL_USE_NISTZ256) */
+#endif

@@ -1,4 +1,4 @@
-// Copyright 2015-2016 Brian Smith.
+// Copyright 2015-2022 Brian Smith.
 //
 // Permission to use, copy, modify, and/or distribute this software for any
 // purpose with or without fee is hereby granted, provided that the above
@@ -12,24 +12,26 @@
 // OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
 // CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-// TODO: Replace this with use of the array_map feature
-// (https://github.com/rust-lang/rust/issues/75243) when it becomes stable.
+use crate::limb::Limb;
 
-pub(crate) trait Map<A, B, BArray> {
-    fn array_map(self, f: impl Fn(A) -> B) -> BArray;
-}
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub struct N0([Limb; 2]);
 
-macro_rules! impl_map {
-    ( $n:expr, [ $( $elem:ident ),+ ] ) => {
-        impl<A, B> Map<A, B, [B; $n]> for [A; $n] {
-            #[inline]
-            fn array_map(self, f: impl Fn(A) -> B) -> [B; $n] {
-                let [ $( $elem ),+ ] = self;
-                [ $( f($elem) ),+ ]
-            }
+impl N0 {
+    #[cfg(feature = "alloc")]
+    pub(super) const LIMBS_USED: usize = 64 / crate::limb::LIMB_BITS;
+
+    #[inline]
+    pub const fn precalculated(n0: u64) -> Self {
+        #[cfg(target_pointer_width = "64")]
+        {
+            Self([n0, 0])
+        }
+
+        #[cfg(target_pointer_width = "32")]
+        {
+            Self([n0 as Limb, (n0 >> crate::limb::LIMB_BITS) as Limb])
         }
     }
 }
-
-impl_map!(4, [a, b, c, d]);
-impl_map!(8, [a, b, c, d, e, f, g, h]);

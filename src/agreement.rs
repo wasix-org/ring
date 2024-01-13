@@ -32,17 +32,17 @@
 //! // message.
 //! let my_public_key = my_private_key.compute_public_key()?;
 //!
-//! let peer_public_key = {
+//! let peer_public_key_bytes = {
 //!     // In a real application, the peer public key would be parsed out of a
 //!     // protocol message. Here we just generate one.
-//!     let peer_public_key = {
-//!         let peer_private_key =
-//!             agreement::EphemeralPrivateKey::generate(&agreement::X25519, &rng)?;
-//!         peer_private_key.compute_public_key()?
-//!     };
-//!
-//!     agreement::UnparsedPublicKey::new(&agreement::X25519, peer_public_key)
+//!     let peer_private_key =
+//!         agreement::EphemeralPrivateKey::generate(&agreement::X25519, &rng)?;
+//!     peer_private_key.compute_public_key()?
 //! };
+//!
+//! let peer_public_key = agreement::UnparsedPublicKey::new(
+//!     &agreement::X25519,
+//!     peer_public_key_bytes);
 //!
 //! agreement::agree_ephemeral(
 //!     my_private_key,
@@ -112,7 +112,7 @@ impl EphemeralPrivateKey {
         //
         // This only handles the key generation part of step 1. The rest of
         // step one is done by `compute_public_key()`.
-        let private_key = ec::Seed::generate(&alg.curve, rng, cpu_features)?;
+        let private_key = ec::Seed::generate(alg.curve, rng, cpu_features)?;
         Ok(Self {
             private_key,
             algorithm: alg,
@@ -178,22 +178,18 @@ impl PublicKey {
 }
 
 /// An unparsed, possibly malformed, public key for key agreement.
-pub struct UnparsedPublicKey<B: AsRef<[u8]>> {
+#[derive(Clone, Copy)]
+pub struct UnparsedPublicKey<B> {
     algorithm: &'static Algorithm,
     bytes: B,
 }
 
-impl<B: Copy> Copy for UnparsedPublicKey<B> where B: AsRef<[u8]> {}
-
-impl<B: Clone> Clone for UnparsedPublicKey<B>
+impl<B> AsRef<[u8]> for UnparsedPublicKey<B>
 where
     B: AsRef<[u8]>,
 {
-    fn clone(&self) -> Self {
-        Self {
-            algorithm: self.algorithm,
-            bytes: self.bytes.clone(),
-        }
+    fn as_ref(&self) -> &[u8] {
+        self.bytes.as_ref()
     }
 }
 
@@ -209,13 +205,13 @@ where
     }
 }
 
-impl<B: AsRef<[u8]>> UnparsedPublicKey<B> {
+impl<B> UnparsedPublicKey<B> {
     /// Constructs a new `UnparsedPublicKey`.
     pub fn new(algorithm: &'static Algorithm, bytes: B) -> Self {
         Self { algorithm, bytes }
     }
 
-    /// TODO: doc
+    /// The algorithm for the public key.
     #[inline]
     pub fn algorithm(&self) -> &'static Algorithm {
         self.algorithm

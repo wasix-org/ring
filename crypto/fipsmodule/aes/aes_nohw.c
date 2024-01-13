@@ -70,12 +70,6 @@ typedef __m128i aes_word_t;
   _mm_set_epi32(0x00ff0000, 0x00ff0000, 0x00ff0000, 0x00ff0000)
 #define AES_NOHW_ROW3_MASK \
   _mm_set_epi32(0xff000000, 0xff000000, 0xff000000, 0xff000000)
-#define AES_NOHW_COL01_MASK \
-  _mm_set_epi32(0x00000000, 0x00000000, 0xffffffff, 0xffffffff)
-#define AES_NOHW_COL2_MASK \
-  _mm_set_epi32(0x00000000, 0xffffffff, 0x00000000, 0x00000000)
-#define AES_NOHW_COL3_MASK \
-  _mm_set_epi32(0xffffffff, 0x00000000, 0x00000000, 0x00000000)
 
 static inline aes_word_t aes_nohw_and(aes_word_t a, aes_word_t b) {
   return _mm_and_si128(a, b);
@@ -109,9 +103,6 @@ typedef uint64_t aes_word_t;
 #define AES_NOHW_ROW1_MASK UINT64_C(0x00f000f000f000f0)
 #define AES_NOHW_ROW2_MASK UINT64_C(0x0f000f000f000f00)
 #define AES_NOHW_ROW3_MASK UINT64_C(0xf000f000f000f000)
-#define AES_NOHW_COL01_MASK UINT64_C(0x00000000ffffffff)
-#define AES_NOHW_COL2_MASK UINT64_C(0x0000ffff00000000)
-#define AES_NOHW_COL3_MASK UINT64_C(0xffff000000000000)
 #else  // !OPENSSL_64_BIT
 typedef uint32_t aes_word_t;
 #define AES_NOHW_WORD_SIZE 4
@@ -120,9 +111,6 @@ typedef uint32_t aes_word_t;
 #define AES_NOHW_ROW1_MASK 0x0c0c0c0c
 #define AES_NOHW_ROW2_MASK 0x30303030
 #define AES_NOHW_ROW3_MASK 0xc0c0c0c0
-#define AES_NOHW_COL01_MASK 0x0000ffff
-#define AES_NOHW_COL2_MASK 0x00ff0000
-#define AES_NOHW_COL3_MASK 0xff000000
 #endif  // OPENSSL_64_BIT
 
 static inline aes_word_t aes_nohw_and(aes_word_t a, aes_word_t b) {
@@ -285,6 +273,9 @@ static inline aes_word_t aes_nohw_delta_swap(aes_word_t a, aes_word_t mask,
 // http://programming.sirrida.de/calcperm.php on smaller inputs.
 #if defined(OPENSSL_64_BIT)
 static inline uint64_t aes_nohw_compact_word(uint64_t a) {
+#if defined(RING_BIG_ENDIAN)
+  a = CRYPTO_bswap8(a);
+#endif
   // Numbering the 64/2 = 16 4-bit chunks, least to most significant, we swap
   // quartets of those chunks:
   //   0 1 2 3 | 4 5 6 7 | 8  9 10 11 | 12 13 14 15 =>
@@ -306,10 +297,16 @@ static inline uint64_t aes_nohw_uncompact_word(uint64_t a) {
   a = aes_nohw_delta_swap(a, UINT64_C(0x00000000ffff0000), 16);
   a = aes_nohw_delta_swap(a, UINT64_C(0x0000ff000000ff00), 8);
   a = aes_nohw_delta_swap(a, UINT64_C(0x00f000f000f000f0), 4);
+#if defined(RING_BIG_ENDIAN)
+  a = CRYPTO_bswap8(a);
+#endif
   return a;
 }
 #else   // !OPENSSL_64_BIT
 static inline uint32_t aes_nohw_compact_word(uint32_t a) {
+#if defined(RING_BIG_ENDIAN)
+  a = CRYPTO_bswap4(a);
+#endif
   // Numbering the 32/2 = 16 pairs of bits, least to most significant, we swap:
   //   0 1 2 3 | 4 5 6 7 | 8  9 10 11 | 12 13 14 15 =>
   //   0 4 2 6 | 1 5 3 7 | 8 12 10 14 |  9 13 11 15
@@ -328,6 +325,9 @@ static inline uint32_t aes_nohw_uncompact_word(uint32_t a) {
   // Reverse the steps of |aes_nohw_uncompact_word|.
   a = aes_nohw_delta_swap(a, 0x0000f0f0, 12);
   a = aes_nohw_delta_swap(a, 0x00cc00cc, 6);
+#if defined(RING_BIG_ENDIAN)
+  a = CRYPTO_bswap4(a);
+#endif
   return a;
 }
 
@@ -766,7 +766,7 @@ static void aes_nohw_encrypt_batch(const AES_NOHW_SCHEDULE *key,
 
 static void aes_nohw_expand_round_keys(AES_NOHW_SCHEDULE *out,
                                        const AES_KEY *key) {
-  for (unsigned i = 0; i <= key->rounds; i++) {
+  for (size_t i = 0; i <= key->rounds; i++) {
     // Copy the round key into each block in the batch.
     for (size_t j = 0; j < AES_NOHW_BATCH_SIZE; j++) {
       aes_word_t tmp[AES_NOHW_BLOCK_WORDS];
@@ -924,29 +924,27 @@ void aes_nohw_ctr32_encrypt_blocks(const uint8_t *in, uint8_t *out,
   aes_nohw_expand_round_keys(&sched, key);
 
   // Make |AES_NOHW_BATCH_SIZE| copies of |ivec|.
-  alignas(AES_NOHW_WORD_SIZE) union {
-    uint32_t u32[AES_NOHW_BATCH_SIZE * 4];
-    uint8_t u8[AES_NOHW_BATCH_SIZE * 16];
-  } ivs, enc_ivs;
+  alignas(AES_NOHW_WORD_SIZE) uint8_t ivs[AES_NOHW_BATCH_SIZE * 16];
+  alignas(AES_NOHW_WORD_SIZE) uint8_t enc_ivs[AES_NOHW_BATCH_SIZE * 16];
   for (size_t i = 0; i < AES_NOHW_BATCH_SIZE; i++) {
-    OPENSSL_memcpy(ivs.u8 + 16 * i, ivec, 16);
+    OPENSSL_memcpy(ivs + 16 * i, ivec, 16);
   }
 
-  uint32_t ctr = CRYPTO_bswap4(ivs.u32[3]);
+  uint32_t ctr = CRYPTO_load_u32_be(ivs + 12);
   for (;;) {
     // Update counters.
-    for (uint32_t i = 0; i < AES_NOHW_BATCH_SIZE; i++) {
-      ivs.u32[4 * i + 3] = CRYPTO_bswap4(ctr + i);
+    for (size_t i = 0; i < AES_NOHW_BATCH_SIZE; i++) {
+      CRYPTO_store_u32_be(ivs + 16 * i + 12, ctr + (uint32_t)i);
     }
 
     size_t todo = blocks >= AES_NOHW_BATCH_SIZE ? AES_NOHW_BATCH_SIZE : blocks;
     AES_NOHW_BATCH batch;
-    aes_nohw_to_batch(&batch, ivs.u8, todo);
+    aes_nohw_to_batch(&batch, ivs, todo);
     aes_nohw_encrypt_batch(&sched, key->rounds, &batch);
-    aes_nohw_from_batch(enc_ivs.u8, todo, &batch);
+    aes_nohw_from_batch(enc_ivs, todo, &batch);
 
     for (size_t i = 0; i < todo; i++) {
-      aes_nohw_xor_block(out + 16 * i, in + 16 * i, enc_ivs.u8 + 16 * i);
+      aes_nohw_xor_block(out + 16 * i, in + 16 * i, enc_ivs + 16 * i);
     }
 
     blocks -= todo;

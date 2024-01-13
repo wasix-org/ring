@@ -270,6 +270,11 @@ $code.=<<___;
 .align	16
 ${PREFIX}_encrypt:
 .cfi_startproc
+	_CET_ENDBR
+#ifdef BORINGSSL_DISPATCH_TEST
+.extern	BORINGSSL_function_hit
+	movb \$1,BORINGSSL_function_hit+1(%rip)
+#endif
 	movups	($inp),$inout0		# load input
 	mov	240($key),$rounds	# key->rounds
 ___
@@ -599,6 +604,10 @@ $code.=<<___;
 .align	16
 ${PREFIX}_ctr32_encrypt_blocks:
 .cfi_startproc
+	_CET_ENDBR
+#ifdef BORINGSSL_DISPATCH_TEST
+	movb \$1,BORINGSSL_function_hit(%rip)
+#endif
 	cmp	\$1,$len
 	jne	.Lctr32_bulk
 
@@ -918,6 +927,8 @@ $code.=<<___;
 	pxor		$rndkey0,$in3
 	movdqu		0x50($inp),$in5
 	pxor		$rndkey0,$in4
+	prefetcht0	0x1c0($inp)	# We process 128 bytes (8*16), so to prefetch 1 iteration
+	prefetcht0	0x200($inp)	# We need to prefetch 2 64 byte lines
 	pxor		$rndkey0,$in5
 	aesenc		$rndkey1,$inout0
 	aesenc		$rndkey1,$inout1
@@ -1190,6 +1201,10 @@ $code.=<<___;
 ${PREFIX}_set_encrypt_key:
 __aesni_set_encrypt_key:
 .cfi_startproc
+	_CET_ENDBR
+#ifdef BORINGSSL_DISPATCH_TEST
+	movb \$1,BORINGSSL_function_hit+3(%rip)
+#endif
 	.byte	0x48,0x83,0xEC,0x08	# sub rsp,8
 .cfi_adjust_cfa_offset	8
 	mov	\$-1,%rax
@@ -1495,6 +1510,7 @@ ___
 }
 
 $code.=<<___;
+.section .rodata
 .align	64
 .Lbswap_mask:
 	.byte	15,14,13,12,11,10,9,8,7,6,5,4,3,2,1,0
@@ -1515,6 +1531,7 @@ $code.=<<___;
 
 .asciz  "AES for Intel AES-NI, CRYPTOGAMS by <appro\@openssl.org>"
 .align	64
+.text
 ___
 
 # EXCEPTION_DISPOSITION handler (EXCEPTION_RECORD *rec,ULONG64 frame,
@@ -1701,4 +1718,4 @@ $code =~ s/\bmovbe\s+%eax,\s*([0-9]+)\(%rsp\)/movbe($1)/gem;
 
 print $code;
 
-close STDOUT or die "error closing STDOUT";
+close STDOUT or die "error closing STDOUT: $!";

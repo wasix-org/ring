@@ -111,35 +111,7 @@
 #
 # Modified from upstream OpenSSL to remove the XOP code.
 
-$flavour = shift;
-$output  = shift;
-if ($flavour =~ /\./) { $output = $flavour; undef $flavour; }
-
-$win64=0; $win64=1 if ($flavour =~ /[nm]asm|mingw64/ || $output =~ /\.asm$/);
-
-$0 =~ m/(.*[\/\\])[^\/\\]+$/; $dir=$1;
-( $xlate="${dir}x86_64-xlate.pl" and -f $xlate ) or
-( $xlate="${dir}../../../perlasm/x86_64-xlate.pl" and -f $xlate) or
-die "can't locate x86_64-xlate.pl";
-
-# In upstream, this is controlled by shelling out to the compiler to check
-# versions, but BoringSSL is intended to be used with pre-generated perlasm
-# output, so this isn't useful anyway.
-#
-# TODO(briansmith): Address davidben's concerns about the CFI annotations and
-# Win64 ABI issues at https://github.com/openssl/openssl/issues/8853.
-# TODO(davidben): Enable AVX2 code after testing by setting $avx to 2. Is it
-# necessary to disable AVX2 code when SHA Extensions code is disabled? Upstream
-# did not tie them together until after $shaext was added.
-$avx = 1;
-
-# TODO(davidben): Consider enabling the Intel SHA Extensions code once it's
-# been tested.
-$shaext=0;	### set to zero if compiling for 1.0.1
-$avx=1		if (!$shaext && $avx);
-
-open OUT,"| \"$^X\" \"$xlate\" $flavour \"$output\"";
-*STDOUT=*OUT;
+my ($flavour, $output) = @ARGV;
 
 if ($output =~ /sha512-x86_64/) {
 	$func="sha512_block_data_order";
@@ -166,6 +138,27 @@ if ($output =~ /sha512-x86_64/) {
 	@sigma1=(17,19,10);
 	$rounds=64;
 }
+
+$win64=0; $win64=1 if ($flavour =~ /[nm]asm|mingw64/ || $output =~ /\.asm$/);
+
+$0 =~ m/(.*[\/\\])[^\/\\]+$/; $dir=$1;
+( $xlate="${dir}x86_64-xlate.pl" and -f $xlate ) or
+( $xlate="${dir}../../../perlasm/x86_64-xlate.pl" and -f $xlate) or
+die "can't locate x86_64-xlate.pl";
+
+# In upstream, this is controlled by shelling out to the compiler to check
+# versions, but BoringSSL is intended to be used with pre-generated perlasm
+# output, so this isn't useful anyway.
+#
+# This file also has an AVX2 implementation, controlled by setting $avx to 2.
+# For now, we intentionally disable it. While it gives a 13-16% perf boost, the
+# CFI annotations are wrong. It allocates stack in a loop and should be
+# rewritten to avoid this.
+$avx = 1;
+$shaext = 1;
+
+open OUT,"| \"$^X\" \"$xlate\" $flavour \"$output\"";
+*STDOUT=*OUT;
 
 $ctx="%rdi";	# 1st arg, zapped by $a3
 $inp="%rsi";	# 2nd arg
@@ -268,6 +261,7 @@ $code=<<___;
 .align	16
 $func:
 .cfi_startproc
+	_CET_ENDBR
 ___
 $code.=<<___ if ($SZ==4 || $avx);
 	leaq	OPENSSL_ia32cap_P(%rip),%r11
@@ -277,7 +271,7 @@ $code.=<<___ if ($SZ==4 || $avx);
 ___
 $code.=<<___ if ($SZ==4 && $shaext);
 	test	\$`1<<29`,%r11d		# check for SHA
-	jnz	_shaext_shortcut
+	jnz	.Lshaext_shortcut
 ___
     # XOP codepath removed.
 $code.=<<___ if ($avx>1);
@@ -409,6 +403,7 @@ ___
 
 if ($SZ==4) {
 $code.=<<___;
+.section .rodata
 .align	64
 .type	$TABLE,\@object
 $TABLE:
@@ -452,9 +447,11 @@ $TABLE:
 	.long	0xffffffff,0xffffffff,0x03020100,0x0b0a0908
 	.long	0xffffffff,0xffffffff,0x03020100,0x0b0a0908
 	.asciz	"SHA256 block transform for x86_64, CRYPTOGAMS by <appro\@openssl.org>"
+.text
 ___
 } else {
 $code.=<<___;
+.section .rodata
 .align	64
 .type	$TABLE,\@object
 $TABLE:
@@ -542,6 +539,7 @@ $TABLE:
 	.quad	0x0001020304050607,0x08090a0b0c0d0e0f
 	.quad	0x0001020304050607,0x08090a0b0c0d0e0f
 	.asciz	"SHA512 block transform for x86_64, CRYPTOGAMS by <appro\@openssl.org>"
+.text
 ___
 }
 
@@ -561,7 +559,8 @@ $code.=<<___;
 .type	sha256_block_data_order_shaext,\@function,3
 .align	64
 sha256_block_data_order_shaext:
-_shaext_shortcut:
+.cfi_startproc
+.Lshaext_shortcut:
 ___
 $code.=<<___ if ($win64);
 	lea	`-8-5*16`(%rsp),%rsp
@@ -705,6 +704,7 @@ $code.=<<___ if ($win64);
 ___
 $code.=<<___;
 	ret
+.cfi_endproc
 .size	sha256_block_data_order_shaext,.-sha256_block_data_order_shaext
 ___
 }}}
@@ -1672,4 +1672,4 @@ foreach (split("\n",$code)) {
 
 	print $_,"\n";
 }
-close STDOUT or die "error closing STDOUT";
+close STDOUT or die "error closing STDOUT: $!";

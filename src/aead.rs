@@ -18,7 +18,7 @@
 //! generic composition paradigm][AEAD] for an introduction to the concept of
 //! AEADs.
 //!
-//! [AEAD]: http://www-cse.ucsd.edu/~mihir/papers/oem.html
+//! [AEAD]: https://eprint.iacr.org/2000/025.pdf
 //! [`crypto.cipher.AEAD`]: https://golang.org/pkg/crypto/cipher/#AEAD
 
 use crate::{cpu, error, hkdf, polyfill};
@@ -68,6 +68,7 @@ pub trait BoundKey<N: NonceSequence>: core::fmt::Debug {
 ///
 /// The type `A` could be a byte slice `&[u8]`, a byte array `[u8; N]`
 /// for some constant `N`, `Vec<u8>`, etc.
+#[derive(Clone, Copy)]
 pub struct Aad<A>(A);
 
 impl<A: AsRef<[u8]>> Aad<A> {
@@ -94,18 +95,6 @@ impl Aad<[u8; 0]> {
     }
 }
 
-impl<A> Clone for Aad<A>
-where
-    A: Clone,
-{
-    #[inline]
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
-
-impl<A> Copy for Aad<A> where A: Copy {}
-
 impl<A> core::fmt::Debug for Aad<A>
 where
     A: core::fmt::Debug,
@@ -128,6 +117,7 @@ where
 impl<A> Eq for Aad<A> where A: Eq {}
 
 #[allow(clippy::large_enum_variant, variant_size_differences)]
+#[derive(Clone)]
 enum KeyInner {
     AesGcm(aes_gcm::Key),
     ChaCha20Poly1305(chacha20_poly1305::Key),
@@ -144,13 +134,20 @@ impl hkdf::KeyType for &'static Algorithm {
 pub struct Algorithm {
     init: fn(key: &[u8], cpu_features: cpu::Features) -> Result<KeyInner, error::Unspecified>,
 
-    seal: fn(key: &KeyInner, nonce: Nonce, aad: Aad<&[u8]>, in_out: &mut [u8]) -> Tag,
+    seal: fn(
+        key: &KeyInner,
+        nonce: Nonce,
+        aad: Aad<&[u8]>,
+        in_out: &mut [u8],
+        cpu_features: cpu::Features,
+    ) -> Tag,
     open: fn(
         key: &KeyInner,
         nonce: Nonce,
         aad: Aad<&[u8]>,
         in_out: &mut [u8],
         src: RangeFrom<usize>,
+        cpu_features: cpu::Features,
     ) -> Tag,
 
     key_len: usize,
@@ -207,14 +204,31 @@ impl PartialEq for Algorithm {
 
 impl Eq for Algorithm {}
 
-/// An authentication tag.
+/// A possibly valid authentication tag.
 #[must_use]
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct Tag([u8; TAG_LEN]);
 
 impl AsRef<[u8]> for Tag {
     fn as_ref(&self) -> &[u8] {
         self.0.as_ref()
+    }
+}
+
+impl TryFrom<&[u8]> for Tag {
+    type Error = error::Unspecified;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        let raw_tag: [u8; TAG_LEN] = value.try_into().map_err(|_| error::Unspecified)?;
+        Ok(Self::from(raw_tag))
+    }
+}
+
+impl From<[u8; TAG_LEN]> for Tag {
+    #[inline]
+    fn from(value: [u8; TAG_LEN]) -> Self {
+        Self(value)
     }
 }
 

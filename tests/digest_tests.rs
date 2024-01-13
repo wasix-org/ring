@@ -46,13 +46,11 @@ fn digest_misc() {
     });
 }
 
-// wasm_bindgen doesn't build this correctly.
-#[cfg(not(all(target_arch = "wsam32", target_os = "unknown")))]
 mod digest_shavs {
     use ring::{digest, test};
 
     fn run_known_answer_test(digest_alg: &'static digest::Algorithm, test_file: test::File) {
-        let section_name = &format!("L = {}", digest_alg.output_len);
+        let section_name = &format!("L = {}", digest_alg.output_len());
         test::run(test_file, |section, test_case| {
             assert_eq!(section_name, section);
             let len_bits = test_case.consume_usize("Len");
@@ -124,10 +122,10 @@ mod digest_shavs {
     }
 
     fn run_monte_carlo_test(digest_alg: &'static digest::Algorithm, test_file: test::File) {
-        let section_name = &format!("L = {}", digest_alg.output_len);
+        let section_name = &format!("L = {}", digest_alg.output_len());
 
         let mut expected_count: isize = -1;
-        let mut seed = Vec::with_capacity(digest_alg.output_len);
+        let mut seed = Vec::with_capacity(digest_alg.output_len());
 
         test::run(test_file, |section, test_case| {
             assert_eq!(section_name, section);
@@ -182,12 +180,10 @@ mod digest_shavs {
 macro_rules! test_i_u_f {
     ( $test_name:ident, $alg:expr) => {
         #[cfg(not(debug_assertions))]
-        // TODO: Get this working on WebAssembly
-        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
         #[test]
         fn $test_name() {
             let mut input = [0; (digest::MAX_BLOCK_LEN + 1) * 3];
-            let max = $alg.block_len + 1;
+            let max = $alg.block_len() + 1;
             for i in 0..(max * 3) {
                 input[i] = (i & 0xff) as u8;
             }
@@ -243,9 +239,7 @@ test_i_u_f!(digest_test_i_u_f_sha512, digest::SHA512);
 /// This is not run in dev (debug) builds because it is too slow.
 macro_rules! test_large_digest {
     ( $test_name:ident, $alg:expr, $len:expr, $expected:expr) => {
-        // TODO: get this working on WebAssembly.
         #[cfg(not(debug_assertions))]
-        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
         #[test]
         fn $test_name() {
             let chunk = vec![123u8; 16 * 1024];

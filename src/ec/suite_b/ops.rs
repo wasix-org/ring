@@ -12,7 +12,7 @@
 // OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
 // CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-use crate::{arithmetic::montgomery::*, c, error, limb::*};
+use crate::{arithmetic::limbs_from_hex, arithmetic::montgomery::*, error, limb::*};
 use core::marker::PhantomData;
 
 pub use self::elem::*;
@@ -50,17 +50,11 @@ impl Point {
     }
 }
 
-static ONE: Elem<Unencoded> = Elem {
-    limbs: limbs![1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    m: PhantomData,
-    encoding: PhantomData,
-};
-
 /// Operations and values needed by all curve operations.
 pub struct CommonOps {
-    pub num_limbs: usize,
+    num_limbs: usize,
     q: Modulus,
-    pub n: Elem<Unencoded>,
+    n: Elem<Unencoded>,
 
     pub a: Elem<R>, // Must be -3 mod q
     pub b: Elem<R>,
@@ -73,6 +67,17 @@ pub struct CommonOps {
 }
 
 impl CommonOps {
+    // The length of a field element, which is the same as the length of a
+    // scalar, in bytes.
+    pub fn len(&self) -> usize {
+        self.num_limbs * LIMB_BYTES
+    }
+
+    #[cfg(test)]
+    pub(super) fn n_limbs(&self) -> &[Limb] {
+        &self.n.limbs[..self.num_limbs]
+    }
+
     #[inline]
     pub fn elem_add<E: Encoding>(&self, a: &mut Elem<E>, b: &Elem<E>) {
         let num_limbs = self.num_limbs;
@@ -90,6 +95,7 @@ impl CommonOps {
 
     #[inline]
     pub fn elem_unencoded(&self, a: &Elem<R>) -> Elem<Unencoded> {
+        const ONE: Elem<Unencoded> = Elem::from_hex("1");
         self.elem_product(a, &ONE)
     }
 
@@ -180,6 +186,10 @@ pub struct PrivateKeyOps {
 }
 
 impl PrivateKeyOps {
+    pub fn leak_limbs<'a>(&self, a: &'a Elem<Unencoded>) -> &'a [Limb] {
+        &a.limbs[..self.common.num_limbs]
+    }
+
     #[inline(always)]
     pub fn point_mul_base(&self, a: &Scalar) -> Point {
         (self.point_mul_base_impl)(a)
@@ -218,7 +228,7 @@ impl PublicKeyOps {
     // implements NIST SP 800-56A Step 2: "Verify that xQ and yQ are integers
     // in the interval [0, p-1] in the case that q is an odd prime p[.]"
     pub fn elem_parse(&self, input: &mut untrusted::Reader) -> Result<Elem<R>, error::Unspecified> {
-        let encoded_value = input.read_bytes(self.common.num_limbs * LIMB_BYTES)?;
+        let encoded_value = input.read_bytes(self.common.len())?;
         let parsed = elem_parse_big_endian_fixed_consttime(self.common, encoded_value)?;
         let mut r = Elem::zero();
         // Montgomery encode (elem_to_mont).
@@ -239,21 +249,17 @@ impl PublicKeyOps {
 pub struct ScalarOps {
     pub common: &'static CommonOps,
 
-    scalar_inv_to_mont_impl: fn(a: &Scalar) -> Scalar<R>,
     scalar_mul_mont: unsafe extern "C" fn(r: *mut Limb, a: *const Limb, b: *const Limb),
 }
 
 impl ScalarOps {
     // The (maximum) length of a scalar, not including any padding.
     pub fn scalar_bytes_len(&self) -> usize {
-        self.common.num_limbs * LIMB_BYTES
+        self.common.len()
     }
 
-    /// Returns the modular inverse of `a` (mod `n`). Panics of `a` is zero,
-    /// because zero isn't invertible.
-    pub fn scalar_inv_to_mont(&self, a: &Scalar) -> Scalar<R> {
-        assert!(!self.common.is_zero(a));
-        (self.scalar_inv_to_mont_impl)(a)
+    pub fn leak_limbs<'s>(&self, s: &'s Scalar) -> &'s [Limb] {
+        &s.limbs[..self.common.num_limbs]
     }
 
     #[inline]
@@ -274,14 +280,16 @@ pub struct PublicScalarOps {
     pub scalar_ops: &'static ScalarOps,
     pub public_key_ops: &'static PublicKeyOps,
 
-    // XXX: `PublicScalarOps` shouldn't depend on `PrivateKeyOps`, but it does
-    // temporarily until `twin_mul` is rewritten.
-    pub private_key_ops: &'static PrivateKeyOps,
-
+    pub twin_mul: fn(g_scalar: &Scalar, p_scalar: &Scalar, p_xy: &(Elem<R>, Elem<R>)) -> Point,
+    pub scalar_inv_to_mont_vartime: fn(s: &Scalar<Unencoded>) -> Scalar<R>,
     pub q_minus_n: Elem<Unencoded>,
 }
 
 impl PublicScalarOps {
+    pub fn n(&self) -> &Elem<Unencoded> {
+        &self.scalar_ops.common.n
+    }
+
     #[inline]
     pub fn scalar_as_elem(&self, a: &Scalar) -> Elem<Unencoded> {
         Elem {
@@ -300,13 +308,44 @@ impl PublicScalarOps {
         let num_limbs = self.public_key_ops.common.num_limbs;
         limbs_less_than_limbs_vartime(&a.limbs[..num_limbs], &b.limbs[..num_limbs])
     }
+
+    pub fn scalar_inv_to_mont_vartime(&self, s: &Scalar<Unencoded>) -> Scalar<R> {
+        (self.scalar_inv_to_mont_vartime)(s)
+    }
 }
 
 #[allow(non_snake_case)]
 pub struct PrivateScalarOps {
     pub scalar_ops: &'static ScalarOps,
 
-    pub oneRR_mod_n: Scalar<RR>, // 1 * R**2 (mod n). TOOD: Use One<RR>.
+    oneRR_mod_n: Scalar<RR>, // 1 * R**2 (mod n). TOOD: Use One<RR>.
+    scalar_inv_to_mont: fn(a: Scalar<R>) -> Scalar<R>,
+}
+
+impl PrivateScalarOps {
+    pub fn to_mont(&self, s: &Scalar<Unencoded>) -> Scalar<R> {
+        self.scalar_ops.scalar_product(s, &self.oneRR_mod_n)
+    }
+
+    /// Returns the modular inverse of `a` (mod `n`). Panics if `a` is zero.
+    pub fn scalar_inv_to_mont(&self, a: &Scalar) -> Scalar<R> {
+        assert!(!self.scalar_ops.common.is_zero(a));
+        let a = self.to_mont(a);
+        (self.scalar_inv_to_mont)(a)
+    }
+}
+
+// XXX: Inefficient and unnecessarily depends on `PrivateKeyOps`. TODO: implement interleaved wNAF
+// multiplication.
+fn twin_mul_inefficient(
+    ops: &PrivateKeyOps,
+    g_scalar: &Scalar,
+    p_scalar: &Scalar,
+    p_xy: &(Elem<R>, Elem<R>),
+) -> Point {
+    let scaled_g = ops.point_mul_base(g_scalar);
+    let scaled_p = ops.point_mul(p_scalar, p_xy);
+    ops.common.point_sum(&scaled_g, &scaled_p)
 }
 
 // This assumes n < q < 2*n.
@@ -321,18 +360,13 @@ pub fn elem_reduced_to_scalar(ops: &CommonOps, elem: &Elem<Unencoded>) -> Scalar
     }
 }
 
-pub fn scalar_sum(ops: &CommonOps, a: &Scalar, b: &Scalar) -> Scalar {
-    let mut r = Scalar::zero();
-    unsafe {
-        LIMBS_add_mod(
-            r.limbs.as_mut_ptr(),
-            a.limbs.as_ptr(),
-            b.limbs.as_ptr(),
-            ops.n.limbs.as_ptr(),
-            ops.num_limbs,
-        )
-    }
-    r
+pub fn scalar_sum(ops: &CommonOps, a: &Scalar, mut b: Scalar) -> Scalar {
+    limbs_add_assign_mod(
+        &mut b.limbs[..ops.num_limbs],
+        &a.limbs[..ops.num_limbs],
+        &ops.n.limbs[..ops.num_limbs],
+    );
+    b
 }
 
 // Returns (`a` squared `squarings` times) * `b`.
@@ -388,16 +422,16 @@ pub fn scalar_parse_big_endian_variable(
 
 pub fn scalar_parse_big_endian_partially_reduced_variable_consttime(
     ops: &CommonOps,
-    allow_zero: AllowZero,
     bytes: untrusted::Input,
 ) -> Result<Scalar, error::Unspecified> {
     let mut r = Scalar::zero();
-    parse_big_endian_in_range_partially_reduced_and_pad_consttime(
-        bytes,
-        allow_zero,
-        &ops.n.limbs[..ops.num_limbs],
-        &mut r.limbs[..ops.num_limbs],
-    )?;
+
+    {
+        let r = &mut r.limbs[..ops.num_limbs];
+        parse_big_endian_and_pad_consttime(bytes, r)?;
+        limbs_reduce_once_constant_time(r, &ops.n.limbs[..ops.num_limbs]);
+    }
+
     Ok(r)
 }
 
@@ -407,7 +441,7 @@ fn parse_big_endian_fixed_consttime<M>(
     allow_zero: AllowZero,
     max_exclusive: &[Limb],
 ) -> Result<elem::Elem<M, Unencoded>, error::Unspecified> {
-    if bytes.len() != ops.num_limbs * LIMB_BYTES {
+    if bytes.len() != ops.len() {
         return Err(error::Unspecified);
     }
     let mut r = elem::Elem::zero();
@@ -420,18 +454,9 @@ fn parse_big_endian_fixed_consttime<M>(
     Ok(r)
 }
 
-prefixed_extern! {
-    fn LIMBS_add_mod(
-        r: *mut Limb,
-        a: *const Limb,
-        b: *const Limb,
-        m: *const Limb,
-        num_limbs: c::size_t,
-    );
-}
-
 #[cfg(test)]
 mod tests {
+    extern crate alloc;
     use super::*;
     use crate::test;
     use alloc::{format, vec, vec::Vec};
@@ -583,16 +608,16 @@ mod tests {
         })
     }
 
-    // There is no `nistz256_neg` on other targets.
+    // There is no `ecp_nistz256_neg` on other targets.
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn p256_elem_neg_test() {
         prefixed_extern! {
-            fn nistz256_neg(r: *mut Limb, a: *const Limb);
+            fn ecp_nistz256_neg(r: *mut Limb, a: *const Limb);
         }
         elem_neg_test(
             &p256::COMMON_OPS,
-            nistz256_neg,
+            ecp_nistz256_neg,
             test_file!("ops/p256_elem_neg_tests.txt"),
         );
     }
@@ -744,15 +769,15 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "!self.common.is_zero(a)")]
+    #[should_panic(expected = "!self.scalar_ops.common.is_zero(a)")]
     fn p256_scalar_inv_to_mont_zero_panic_test() {
-        let _ = p256::SCALAR_OPS.scalar_inv_to_mont(&ZERO_SCALAR);
+        let _ = p256::PRIVATE_SCALAR_OPS.scalar_inv_to_mont(&ZERO_SCALAR);
     }
 
     #[test]
-    #[should_panic(expected = "!self.common.is_zero(a)")]
+    #[should_panic(expected = "!self.scalar_ops.common.is_zero(a)")]
     fn p384_scalar_inv_to_mont_zero_panic_test() {
-        let _ = p384::SCALAR_OPS.scalar_inv_to_mont(&ZERO_SCALAR);
+        let _ = p384::PRIVATE_SCALAR_OPS.scalar_inv_to_mont(&ZERO_SCALAR);
     }
 
     #[test]
@@ -849,14 +874,14 @@ mod tests {
     #[test]
     fn p384_point_double_test() {
         prefixed_extern! {
-            fn nistz384_point_double(
+            fn p384_point_double(
                 r: *mut Limb,   // [p384::COMMON_OPS.num_limbs*3]
                 a: *const Limb, // [p384::COMMON_OPS.num_limbs*3]
             );
         }
         point_double_test(
             &p384::PRIVATE_KEY_OPS,
-            nistz384_point_double,
+            p384_point_double,
             test_file!("ops/p384_point_double_tests.txt"),
         );
     }
@@ -886,37 +911,24 @@ mod tests {
         });
     }
 
+    /// TODO: We should be testing `point_mul` with points other than the generator.
     #[test]
     fn p256_point_mul_test() {
-        point_mul_tests(
+        point_mul_base_tests(
             &p256::PRIVATE_KEY_OPS,
-            test_file!("ops/p256_point_mul_tests.txt"),
+            |s| p256::PRIVATE_KEY_OPS.point_mul(s, &p256::GENERATOR),
+            test_file!("ops/p256_point_mul_base_tests.txt"),
         );
     }
 
+    /// TODO: We should be testing `point_mul` with points other than the generator.
     #[test]
     fn p384_point_mul_test() {
-        point_mul_tests(
+        point_mul_base_tests(
             &p384::PRIVATE_KEY_OPS,
-            test_file!("ops/p384_point_mul_tests.txt"),
+            |s| p384::PRIVATE_KEY_OPS.point_mul(s, &p384::GENERATOR),
+            test_file!("ops/p384_point_mul_base_tests.txt"),
         );
-    }
-
-    fn point_mul_tests(ops: &PrivateKeyOps, test_file: test::File) {
-        test::run(test_file, |section, test_case| {
-            assert_eq!(section, "");
-            let p_scalar = consume_scalar(ops.common, test_case, "p_scalar");
-            let (x, y) = match consume_point(ops, test_case, "p") {
-                TestPoint::Infinity => {
-                    panic!("can't be inf.");
-                }
-                TestPoint::Affine(x, y) => (x, y),
-            };
-            let expected_result = consume_point(ops, test_case, "r");
-            let actual_result = ops.point_mul(&p_scalar, &(x, y));
-            assert_point_actual_equals_expected(ops, &actual_result, &expected_result);
-            Ok(())
-        })
     }
 
     #[test]
@@ -950,9 +962,9 @@ mod tests {
 
             let product = priv_ops.point_mul(&p_scalar, &p);
 
-            let mut actual_result = vec![4u8; 1 + (2 * (cops.num_limbs * LIMB_BYTES))];
+            let mut actual_result = vec![4u8; 1 + (2 * cops.len())];
             {
-                let (x, y) = actual_result[1..].split_at_mut(cops.num_limbs * LIMB_BYTES);
+                let (x, y) = actual_result[1..].split_at_mut(cops.len());
                 super::super::private_key::big_endian_affine_from_jacobian(
                     priv_ops,
                     Some(x),
@@ -972,6 +984,7 @@ mod tests {
     fn p256_point_mul_base_test() {
         point_mul_base_tests(
             &p256::PRIVATE_KEY_OPS,
+            |s| p256::PRIVATE_KEY_OPS.point_mul_base(s),
             test_file!("ops/p256_point_mul_base_tests.txt"),
         );
     }
@@ -980,16 +993,21 @@ mod tests {
     fn p384_point_mul_base_test() {
         point_mul_base_tests(
             &p384::PRIVATE_KEY_OPS,
+            |s| p384::PRIVATE_KEY_OPS.point_mul_base(s),
             test_file!("ops/p384_point_mul_base_tests.txt"),
         );
     }
 
-    fn point_mul_base_tests(ops: &PrivateKeyOps, test_file: test::File) {
+    pub(super) fn point_mul_base_tests(
+        ops: &PrivateKeyOps,
+        f: impl Fn(&Scalar) -> Point,
+        test_file: test::File,
+    ) {
         test::run(test_file, |section, test_case| {
             assert_eq!(section, "");
             let g_scalar = consume_scalar(ops.common, test_case, "g_scalar");
             let expected_result = consume_point(ops, test_case, "r");
-            let actual_result = ops.point_mul_base(&g_scalar);
+            let actual_result = f(&g_scalar);
             assert_point_actual_equals_expected(ops, &actual_result, &expected_result);
             Ok(())
         })
@@ -1001,25 +1019,25 @@ mod tests {
         expected_point: &TestPoint,
     ) {
         let cops = ops.common;
-        let actual_x = &cops.point_x(&actual_point);
-        let actual_y = &cops.point_y(&actual_point);
-        let actual_z = &cops.point_z(&actual_point);
+        let actual_x = &cops.point_x(actual_point);
+        let actual_y = &cops.point_y(actual_point);
+        let actual_z = &cops.point_z(actual_point);
         match expected_point {
             TestPoint::Infinity => {
                 let zero = Elem::zero();
-                assert_elems_are_equal(cops, &actual_z, &zero);
+                assert_elems_are_equal(cops, actual_z, &zero);
             }
             TestPoint::Affine(expected_x, expected_y) => {
-                let zz_inv = ops.elem_inverse_squared(&actual_z);
-                let x_aff = cops.elem_product(&actual_x, &zz_inv);
+                let zz_inv = ops.elem_inverse_squared(actual_z);
+                let x_aff = cops.elem_product(actual_x, &zz_inv);
                 let y_aff = {
                     let zzzz_inv = cops.elem_squared(&zz_inv);
-                    let zzz_inv = cops.elem_product(&actual_z, &zzzz_inv);
-                    cops.elem_product(&actual_y, &zzz_inv)
+                    let zzz_inv = cops.elem_product(actual_z, &zzzz_inv);
+                    cops.elem_product(actual_y, &zzz_inv)
                 };
 
-                assert_elems_are_equal(cops, &x_aff, &expected_x);
-                assert_elems_are_equal(cops, &y_aff, &expected_y);
+                assert_elems_are_equal(cops, &x_aff, expected_x);
+                assert_elems_are_equal(cops, &y_aff, expected_y);
             }
         }
     }
@@ -1163,7 +1181,7 @@ mod tests {
         name: &str,
     ) -> Vec<u8> {
         let unpadded_bytes = test_case.consume_bytes(name);
-        let mut bytes = vec![0; (ops.num_limbs * LIMB_BYTES) - unpadded_bytes.len()];
+        let mut bytes = vec![0; ops.len() - unpadded_bytes.len()];
         bytes.extend(&unpadded_bytes);
         bytes
     }

@@ -34,4 +34,6 @@
 // initialising it to zero, it becomes a "data symbol", which isn't so
 // affected.
 HIDDEN uint32_t OPENSSL_ia32cap_P[4] = {0};
+#elif defined(OPENSSL_ARM) || defined(OPENSSL_AARCH64)
+HIDDEN uint32_t OPENSSL_armcap_P = 0;
 #endif

@@ -12,19 +12,19 @@
 // OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
 // CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-use crate::{endian::*, polyfill};
+use crate::polyfill::ArrayFlatten;
 use core::ops::{BitXor, BitXorAssign};
 
 #[repr(transparent)]
 #[derive(Copy, Clone)]
-pub struct Block([BigEndian<u64>; 2]);
+pub struct Block([u8; 16]);
 
 pub const BLOCK_LEN: usize = 16;
 
 impl Block {
     #[inline]
     pub fn zero() -> Self {
-        Self([Encoding::ZERO; 2])
+        Self([0; 16])
     }
 
     #[inline]
@@ -37,28 +37,16 @@ impl Block {
     #[inline]
     pub fn zero_from(&mut self, index: usize) {
         let mut tmp: [u8; BLOCK_LEN] = *self.as_ref();
-        polyfill::slice::fill(&mut tmp[index..], 0);
+        tmp[index..].fill(0);
         *self = Self::from(&tmp)
-    }
-}
-
-impl From<[u64; 2]> for Block {
-    #[inline]
-    fn from(other: [u64; 2]) -> Self {
-        Self([other[0].into(), other[1].into()])
-    }
-}
-
-impl Into<[u64; 2]> for Block {
-    #[inline]
-    fn into(self) -> [u64; 2] {
-        [self.0[0].into(), self.0[1].into()]
     }
 }
 
 impl BitXorAssign for Block {
     #[inline]
     fn bitxor_assign(&mut self, a: Self) {
+        // Relies heavily on optimizer to optimize this into word- or vector-
+        // level XOR.
         for (r, a) in self.0.iter_mut().zip(a.0.iter()) {
             *r ^= *a;
         }
@@ -76,16 +64,26 @@ impl BitXor for Block {
     }
 }
 
+impl<T> From<T> for Block
+where
+    T: ArrayFlatten<Output = [u8; 16]>,
+{
+    #[inline]
+    fn from(bytes: T) -> Self {
+        Self(bytes.array_flatten())
+    }
+}
+
 impl From<&'_ [u8; BLOCK_LEN]> for Block {
     #[inline]
     fn from(bytes: &[u8; BLOCK_LEN]) -> Self {
-        Self(FromByteArray::from_byte_array(bytes))
+        Self(*bytes)
     }
 }
 
 impl AsRef<[u8; BLOCK_LEN]> for Block {
     #[inline]
     fn as_ref(&self) -> &[u8; BLOCK_LEN] {
-        self.0.as_byte_array()
+        &self.0
     }
 }

@@ -14,10 +14,6 @@
 // CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 use super::{quic::Sample, Nonce};
-use crate::{
-    cpu,
-    polyfill::{array_map::Map, ChunksFixed},
-};
 
 #[cfg(any(
     test,
@@ -30,24 +26,19 @@ use crate::{
 ))]
 mod fallback;
 
+use crate::polyfill::ArraySplitMap;
 use core::ops::RangeFrom;
 
+#[derive(Clone)]
 pub struct Key {
     words: [u32; KEY_LEN / 4],
-    cpu_features: cpu::Features,
 }
 
 impl Key {
-    pub(super) fn new(value: [u8; KEY_LEN], cpu_features: cpu::Features) -> Self {
-        let value: &[[u8; 4]; KEY_LEN / 4] = value.chunks_fixed();
+    pub(super) fn new(value: [u8; KEY_LEN]) -> Self {
         Self {
-            words: value.array_map(u32::from_le_bytes),
-            cpu_features,
+            words: value.array_split_map(u32::from_le_bytes),
         }
-    }
-
-    pub(super) fn cpu_features(&self) -> cpu::Features {
-        self.cpu_features
     }
 }
 
@@ -161,13 +152,8 @@ impl Counter {
     }
 
     fn from_nonce_and_ctr(nonce: Nonce, ctr: u32) -> Self {
-        let nonce = nonce.as_ref().chunks_fixed();
-        Self([
-            ctr,
-            u32::from_le_bytes(nonce[0]),
-            u32::from_le_bytes(nonce[1]),
-            u32::from_le_bytes(nonce[2]),
-        ])
+        let [n0, n1, n2] = nonce.as_ref().array_split_map(u32::from_le_bytes);
+        Self([ctr, n0, n1, n2])
     }
 
     pub fn increment(&mut self) -> Iv {
@@ -199,8 +185,7 @@ pub struct Iv([u32; 4]);
 
 impl Iv {
     fn assume_unique_for_key(value: [u8; 16]) -> Self {
-        let value: &[[u8; 4]; 4] = value.chunks_fixed();
-        Self(value.array_map(u32::from_le_bytes))
+        Self(value.array_split_map(u32::from_le_bytes))
     }
 
     fn into_counter_for_single_block_less_safe(self) -> Counter {
@@ -214,10 +199,11 @@ const BLOCK_LEN: usize = 64;
 
 #[cfg(test)]
 mod tests {
+    extern crate alloc;
+
     use super::*;
-    use crate::{polyfill, test};
+    use crate::test;
     use alloc::vec;
-    use core::convert::TryInto;
 
     const MAX_ALIGNMENT_AND_OFFSET: (usize, usize) = (15, 259);
     const MAX_ALIGNMENT_AND_OFFSET_SUBSET: (usize, usize) =
@@ -268,7 +254,7 @@ mod tests {
 
             let key = test_case.consume_bytes("Key");
             let key: &[u8; KEY_LEN] = key.as_slice().try_into()?;
-            let key = Key::new(*key, cpu::features());
+            let key = Key::new(*key);
 
             let ctr = test_case.consume_usize("Ctr");
             let nonce = test_case.consume_bytes("Nonce");
@@ -279,6 +265,7 @@ mod tests {
             // behavior of ChaCha20 implementation changes dependent on the
             // length of the input.
             for len in 0..=input.len() {
+                #[allow(clippy::cast_possible_truncation)]
                 chacha20_test_case_inner(
                     &key,
                     &nonce,
@@ -308,11 +295,11 @@ mod tests {
         const ARBITRARY: u8 = 123;
 
         for alignment in 0..=max_alignment {
-            polyfill::slice::fill(&mut buf[..alignment], ARBITRARY);
+            buf[..alignment].fill(ARBITRARY);
             let buf = &mut buf[alignment..];
             for offset in 0..=max_offset {
                 let buf = &mut buf[..(offset + input.len())];
-                polyfill::slice::fill(&mut buf[..offset], ARBITRARY);
+                buf[..offset].fill(ARBITRARY);
                 let src = offset..;
                 buf[src.clone()].copy_from_slice(input);
 

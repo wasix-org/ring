@@ -39,8 +39,8 @@ static const BN_ULONG ONE[P256_LIMBS] = {
 
 // Recode window to a signed digit, see |nistp_recode_scalar_bits| in
 // util.c for details
-static crypto_word booth_recode_w5(crypto_word in) {
-  crypto_word s, d;
+static crypto_word_t booth_recode_w5(crypto_word_t in) {
+  crypto_word_t s, d;
 
   s = ~((in >> 5) - 1);
   d = (1 << 6) - in - 1;
@@ -50,8 +50,8 @@ static crypto_word booth_recode_w5(crypto_word in) {
   return (d << 1) + (s & 1);
 }
 
-static crypto_word booth_recode_w7(crypto_word in) {
-  crypto_word s, d;
+static crypto_word_t booth_recode_w7(crypto_word_t in) {
+  crypto_word_t s, d;
 
   s = ~((in >> 7) - 1);
   d = (1 << 8) - in - 1;
@@ -128,7 +128,7 @@ static void ecp_nistz256_windowed_mul(P256_POINT *r,
   debug_assert_nonsecret(p_y != NULL);
 
   static const size_t kWindowSize = 5;
-  static const crypto_word kMask = (1 << (5 /* kWindowSize */ + 1)) - 1;
+  static const crypto_word_t kMask = (1 << (5 /* kWindowSize */ + 1)) - 1;
 
   // A |P256_POINT| is (3 * 32) = 96 bytes, and the 64-byte alignment should
   // add no more than 63 bytes of overhead. Thus, |table| should require
@@ -165,7 +165,7 @@ static void ecp_nistz256_windowed_mul(P256_POINT *r,
   BN_ULONG tmp[P256_LIMBS];
   alignas(32) P256_POINT h;
   size_t index = 255;
-  crypto_word wvalue = p_str[(index - 1) / 8];
+  crypto_word_t wvalue = p_str[(index - 1) / 8];
   wvalue = (wvalue >> ((index - 1) % 8)) & kMask;
 
   ecp_nistz256_select_w5(r, table, (int)(booth_recode_w5(wvalue) >> 1));
@@ -174,7 +174,7 @@ static void ecp_nistz256_windowed_mul(P256_POINT *r,
     if (index != 255) {
       size_t off = (index - 1) / 8;
 
-      wvalue = (crypto_word)p_str[off] | (crypto_word)p_str[off + 1] << 8;
+      wvalue = (crypto_word_t)p_str[off] | (crypto_word_t)p_str[off + 1] << 8;
       wvalue = (wvalue >> ((index - 1) % 8)) & kMask;
 
       wvalue = booth_recode_w5(wvalue);
@@ -210,80 +210,133 @@ static void ecp_nistz256_windowed_mul(P256_POINT *r,
   ecp_nistz256_point_add(r, r, &h);
 }
 
-typedef union {
-  P256_POINT p;
-  P256_POINT_AFFINE a;
-} p256_point_union_t;
-
-static crypto_word calc_first_wvalue(size_t *index, const uint8_t p_str[33]) {
+static crypto_word_t calc_first_wvalue(size_t *index, const uint8_t p_str[33]) {
   static const size_t kWindowSize = 7;
-  static const crypto_word kMask = (1 << (7 /* kWindowSize */ + 1)) - 1;
+  static const crypto_word_t kMask = (1 << (7 /* kWindowSize */ + 1)) - 1;
   *index = kWindowSize;
 
-  crypto_word wvalue = ((crypto_word)p_str[0] << 1) & kMask;
+  crypto_word_t wvalue = ((crypto_word_t)p_str[0] << 1) & kMask;
   return booth_recode_w7(wvalue);
 }
 
-static crypto_word calc_wvalue(size_t *index, const uint8_t p_str[33]) {
+static crypto_word_t calc_wvalue(size_t *index, const uint8_t p_str[33]) {
   static const size_t kWindowSize = 7;
-  static const crypto_word kMask = (1 << (7 /* kWindowSize */ + 1)) - 1;
+  static const crypto_word_t kMask = (1 << (7 /* kWindowSize */ + 1)) - 1;
 
   const size_t off = (*index - 1) / 8;
-  crypto_word wvalue =
-      (crypto_word)p_str[off] | (crypto_word)p_str[off + 1] << 8;
+  crypto_word_t wvalue =
+      (crypto_word_t)p_str[off] | (crypto_word_t)p_str[off + 1] << 8;
   wvalue = (wvalue >> ((*index - 1) % 8)) & kMask;
   *index += kWindowSize;
 
   return booth_recode_w7(wvalue);
 }
 
-void p256_point_mul(P256_POINT *r, const Limb p_scalar[P256_LIMBS],
+void p256_point_mul(Limb r[3][P256_LIMBS], const Limb p_scalar[P256_LIMBS],
                         const Limb p_x[P256_LIMBS],
                         const Limb p_y[P256_LIMBS]) {
   alignas(32) P256_POINT out;
   ecp_nistz256_windowed_mul(&out, p_scalar, p_x, p_y);
 
-  limbs_copy(r->X, out.X, P256_LIMBS);
-  limbs_copy(r->Y, out.Y, P256_LIMBS);
-  limbs_copy(r->Z, out.Z, P256_LIMBS);
+  limbs_copy(r[0], out.X, P256_LIMBS);
+  limbs_copy(r[1], out.Y, P256_LIMBS);
+  limbs_copy(r[2], out.Z, P256_LIMBS);
 }
 
-void p256_point_mul_base(P256_POINT *r, const Limb scalar[P256_LIMBS]) {
-  alignas(32) p256_point_union_t t, p;
-
+void p256_point_mul_base(Limb r[3][P256_LIMBS], const Limb scalar[P256_LIMBS]) {
   P256_SCALAR_BYTES p_str;
   p256_scalar_bytes_from_limbs(p_str, scalar);
 
   // First window
   size_t index = 0;
-  crypto_word wvalue = calc_first_wvalue(&index, p_str);
+  crypto_word_t wvalue = calc_first_wvalue(&index, p_str);
 
-  ecp_nistz256_select_w7(&p.a, ecp_nistz256_precomputed[0], (int)(wvalue >> 1));
-  ecp_nistz256_neg(p.p.Z, p.p.Y);
-  copy_conditional(p.p.Y, p.p.Z, wvalue & 1);
+  alignas(32) P256_POINT_AFFINE t;
+  alignas(32) P256_POINT p;
+  ecp_nistz256_select_w7(&t, ecp_nistz256_precomputed[0], (int)(wvalue >> 1));
+  ecp_nistz256_neg(p.Z, t.Y);
+  copy_conditional(t.Y, p.Z, wvalue & 1);
 
-  // Convert |p| from affine to Jacobian coordinates. We set Z to zero if |p|
-  // is infinity and |ONE| otherwise. |p| was computed from the table, so it
+  // Convert |t| from affine to Jacobian coordinates. We set Z to zero if |t|
+  // is infinity and |ONE| otherwise. |t| was computed from the table, so it
   // is infinity iff |wvalue >> 1| is zero.
-  OPENSSL_memset(p.p.Z, 0, sizeof(p.p.Z));
-  copy_conditional(p.p.Z, ONE, is_not_zero(wvalue >> 1));
+  limbs_copy(p.X, t.X, P256_LIMBS);
+  limbs_copy(p.Y, t.Y, P256_LIMBS);
+  limbs_zero(p.Z, P256_LIMBS);
+  copy_conditional(p.Z, ONE, is_not_zero(wvalue >> 1));
 
   for (int i = 1; i < 37; i++) {
     wvalue = calc_wvalue(&index, p_str);
 
-    ecp_nistz256_select_w7(&t.a, ecp_nistz256_precomputed[i], (int)(wvalue >> 1));
+    ecp_nistz256_select_w7(&t, ecp_nistz256_precomputed[i], (int)(wvalue >> 1));
 
-    ecp_nistz256_neg(t.p.Z, t.a.Y);
-    copy_conditional(t.a.Y, t.p.Z, wvalue & 1);
+    alignas(32) BN_ULONG neg_Y[P256_LIMBS];
+    ecp_nistz256_neg(neg_Y, t.Y);
+    copy_conditional(t.Y, neg_Y, wvalue & 1);
 
-    // Note |ecp_nistz256_point_add_affine| does not work if |p.p| and |t.a|
-    // are the same non-infinity point.
-    ecp_nistz256_point_add_affine(&p.p, &p.p, &t.a);
+    // Note |ecp_nistz256_point_add_affine| does not work if |p| and |t| are the
+    // same non-infinity point.
+    ecp_nistz256_point_add_affine(&p, &p, &t);
   }
 
-  limbs_copy(r->X, p.p.X, P256_LIMBS);
-  limbs_copy(r->Y, p.p.Y, P256_LIMBS);
-  limbs_copy(r->Z, p.p.Z, P256_LIMBS);
+  limbs_copy(r[0], p.X, P256_LIMBS);
+  limbs_copy(r[1], p.Y, P256_LIMBS);
+  limbs_copy(r[2], p.Z, P256_LIMBS);
+}
+
+void p256_point_mul_base_vartime(Limb r[3][P256_LIMBS],
+                                 const Limb g_scalar[P256_LIMBS]) {
+  alignas(32) P256_POINT p;
+  uint8_t p_str[33];
+  OPENSSL_memcpy(p_str, g_scalar, 32);
+  p_str[32] = 0;
+
+  // First window
+  size_t index = 0;
+  size_t wvalue = calc_first_wvalue(&index, p_str);
+
+  // Convert |p| from affine to Jacobian coordinates. We set Z to zero if |p|
+  // is infinity and |ONE| otherwise. |p| was computed from the table, so it
+  // is infinity iff |wvalue >> 1| is zero.
+  if ((wvalue >> 1) != 0) {
+    OPENSSL_memcpy(p.X, &ecp_nistz256_precomputed[0][(wvalue >> 1) - 1].X,
+                   sizeof(p.X));
+    OPENSSL_memcpy(p.Y, &ecp_nistz256_precomputed[0][(wvalue >> 1) - 1].Y,
+                   sizeof(p.Y));
+    OPENSSL_memcpy(p.Z, ONE, sizeof(p.Z));
+  } else {
+    OPENSSL_memset(p.X, 0, sizeof(p.X));
+    OPENSSL_memset(p.Y, 0, sizeof(p.Y));
+    OPENSSL_memset(p.Z, 0, sizeof(p.Z));
+  }
+
+  if ((wvalue & 1) == 1) {
+    ecp_nistz256_neg(p.Y, p.Y);
+  }
+
+  for (int i = 1; i < 37; i++) {
+    wvalue = calc_wvalue(&index, p_str);
+    if ((wvalue >> 1) == 0) {
+      continue;
+    }
+
+    alignas(32) P256_POINT_AFFINE t;
+    OPENSSL_memcpy(&t, &ecp_nistz256_precomputed[i][(wvalue >> 1) - 1],
+                   sizeof(t));
+    if ((wvalue & 1) == 1) {
+      ecp_nistz256_neg(t.Y, t.Y);
+    }
+
+    // Note |ecp_nistz256_point_add_affine| does not work if |p| and |t| are
+    // the same non-infinity point, so it is important that we compute the
+    // |g_scalar| term before the |p_scalar| term.
+    ecp_nistz256_point_add_affine(&p, &p, &t);
+  }
+
+
+  limbs_copy(r[0], p.X, P256_LIMBS);
+  limbs_copy(r[1], p.Y, P256_LIMBS);
+  limbs_copy(r[2], p.Z, P256_LIMBS);
 }
 
 #endif /* defined(OPENSSL_USE_NISTZ256) */

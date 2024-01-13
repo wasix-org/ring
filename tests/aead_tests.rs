@@ -1,4 +1,4 @@
-// Copyright 2015-2016 Brian Smith.
+// Copyright 2015-2021 Brian Smith.
 //
 // Permission to use, copy, modify, and/or distribute this software for any
 // purpose with or without fee is hereby granted, provided that the above
@@ -12,15 +12,13 @@
 // OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
 // CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-#![cfg(any(not(target_arch = "wasm32"), feature = "wasm32_c"))]
-
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use wasm_bindgen_test::{wasm_bindgen_test as test, wasm_bindgen_test_configure};
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 wasm_bindgen_test_configure!(run_in_browser);
 
-use core::{convert::TryInto, ops::RangeFrom};
+use core::ops::RangeFrom;
 use ring::{aead, error, test, test_file};
 
 /// Generate the known answer test functions for the given algorithm and test
@@ -50,11 +48,10 @@ macro_rules! test_aead {
             $(
                 #[allow(non_snake_case)]
                 mod $alg { // Provide a separate namespace for each algorithm's test.
-                    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
                     use super::super::*;
 
                     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-                    use super::super::{*, test};
+                    use wasm_bindgen_test::wasm_bindgen_test as test;
 
                     test_known_answer!(
                         $alg,
@@ -68,6 +65,7 @@ macro_rules! test_aead {
                             opening_key_open_within,
                             sealing_key_seal_in_place_append_tag,
                             sealing_key_seal_in_place_separate_tag,
+                            test_open_in_place_seperate_tag,
                         ]);
 
                     #[test]
@@ -187,6 +185,41 @@ where
 
     assert_eq!(actual_plaintext, tc.plaintext);
     assert_eq!(&in_out[..tc.plaintext.len()], tc.plaintext);
+    Ok(())
+}
+
+fn test_open_in_place_seperate_tag(
+    alg: &'static aead::Algorithm,
+    tc: KnownAnswerTestCase,
+) -> Result<(), error::Unspecified> {
+    let key = make_less_safe_key(alg, tc.key);
+
+    let mut in_out = Vec::from(tc.ciphertext);
+    let tag = tc.tag.try_into().unwrap();
+
+    // Test the simplest behavior.
+    {
+        let nonce = aead::Nonce::assume_unique_for_key(tc.nonce);
+        let actual_plaintext =
+            key.open_in_place_separate_tag(nonce, tc.aad, tag, &mut in_out, 0..)?;
+
+        assert_eq!(actual_plaintext, tc.plaintext);
+        assert_eq!(&in_out[..tc.plaintext.len()], tc.plaintext);
+    }
+
+    // Test that ciphertext range shifing works as expected.
+    {
+        let range = in_out.len()..;
+        in_out.extend_from_slice(tc.ciphertext);
+
+        let nonce = aead::Nonce::assume_unique_for_key(tc.nonce);
+        let actual_plaintext =
+            key.open_in_place_separate_tag(nonce, tc.aad, tag, &mut in_out, range)?;
+
+        assert_eq!(actual_plaintext, tc.plaintext);
+        assert_eq!(&in_out[..tc.plaintext.len()], tc.plaintext);
+    }
+
     Ok(())
 }
 
@@ -473,6 +506,13 @@ fn aead_test_aad_traits() {
 fn test_tag_traits() {
     test::compile_time_assert_send::<aead::Tag>();
     test::compile_time_assert_sync::<aead::Tag>();
+
+    test::compile_time_assert_copy::<aead::Tag>();
+    test::compile_time_assert_clone::<aead::Tag>();
+
+    let tag = aead::Tag::from([4u8; 16]);
+    let _tag_2 = tag; // Cover `Copy`
+    assert_eq!(tag.as_ref(), tag.clone().as_ref()); // Cover `Clone`
 }
 
 #[test]
@@ -511,6 +551,52 @@ fn test_aead_key_debug() {
         "LessSafeKey { algorithm: AES_256_GCM }",
         format!("{:?}", key)
     );
+}
+
+fn test_aead_lesssafekey_clone_for_algorithm(algorithm: &'static aead::Algorithm) {
+    let test_bytes: Vec<u8> = (0..32).collect();
+    let key_bytes = &test_bytes[..algorithm.key_len()];
+    let nonce_bytes = &test_bytes[..algorithm.nonce_len()];
+
+    let key1: aead::LessSafeKey =
+        aead::LessSafeKey::new(aead::UnboundKey::new(algorithm, key_bytes).unwrap());
+    let key2 = key1.clone();
+
+    // LessSafeKey doesn't support AsRef or PartialEq, so instead just check that both keys produce
+    // the same encrypted output.
+    let mut buf1: Vec<u8> = (0..100).collect();
+    let mut buf2 = buf1.clone();
+    let tag1 = key1
+        .seal_in_place_separate_tag(
+            aead::Nonce::try_assume_unique_for_key(nonce_bytes).unwrap(),
+            aead::Aad::empty(),
+            &mut buf1,
+        )
+        .unwrap();
+    let tag2 = key2
+        .seal_in_place_separate_tag(
+            aead::Nonce::try_assume_unique_for_key(nonce_bytes).unwrap(),
+            aead::Aad::empty(),
+            &mut buf2,
+        )
+        .unwrap();
+    assert_eq!(tag1.as_ref(), tag2.as_ref());
+    assert_eq!(buf1, buf2);
+}
+
+#[test]
+fn test_aead_lesssafekey_clone_aes_128_gcm() {
+    test_aead_lesssafekey_clone_for_algorithm(&aead::AES_128_GCM);
+}
+
+#[test]
+fn test_aead_lesssafekey_clone_aes_256_gcm() {
+    test_aead_lesssafekey_clone_for_algorithm(&aead::AES_256_GCM);
+}
+
+#[test]
+fn test_aead_lesssafekey_clone_chacha20_poly1305() {
+    test_aead_lesssafekey_clone_for_algorithm(&aead::CHACHA20_POLY1305);
 }
 
 fn make_key<K: aead::BoundKey<OneNonceSequence>>(

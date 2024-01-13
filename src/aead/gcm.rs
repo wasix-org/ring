@@ -16,26 +16,25 @@ use super::{
     block::{Block, BLOCK_LEN},
     Aad,
 };
-use crate::cpu;
+use crate::{cpu, polyfill::ArraySplitMap};
 use core::ops::BitXorAssign;
 
 #[cfg(not(target_arch = "aarch64"))]
 mod gcm_nohw;
 
+#[derive(Clone)]
 pub struct Key {
     h_table: HTable,
-    cpu_features: cpu::Features,
 }
 
 impl Key {
     pub(super) fn new(h_be: Block, cpu_features: cpu::Features) -> Self {
-        let h: [u64; 2] = h_be.into();
+        let h: [u64; 2] = h_be.as_ref().array_split_map(u64::from_be_bytes);
 
         let mut key = Self {
             h_table: HTable {
                 Htable: [u128 { hi: 0, lo: 0 }; HTABLE_LEN],
             },
-            cpu_features,
         };
         let h_table = &mut key.h_table;
 
@@ -91,14 +90,13 @@ pub struct Context {
 }
 
 impl Context {
-    pub(crate) fn new(key: &Key, aad: Aad<&[u8]>) -> Self {
+    pub(crate) fn new(key: &Key, aad: Aad<&[u8]>, cpu_features: cpu::Features) -> Self {
         let mut ctx = Self {
             inner: ContextInner {
                 Xi: Xi(Block::zero()),
-                _unused: Block::zero(),
                 Htable: key.h_table.clone(),
             },
-            cpu_features: key.cpu_features,
+            cpu_features,
         };
 
         for ad in aad.0.chunks(BLOCK_LEN) {
@@ -113,8 +111,8 @@ impl Context {
     /// Access to `inner` for the integrated AES-GCM implementations only.
     #[cfg(target_arch = "x86_64")]
     #[inline]
-    pub(super) fn inner(&mut self) -> &mut ContextInner {
-        &mut self.inner
+    pub(super) fn inner(&mut self) -> (&HTable, &mut Xi) {
+        (&self.inner.Htable, &mut self.inner.Xi)
     }
 
     pub fn update_blocks(&mut self, input: &[u8]) {
@@ -124,12 +122,15 @@ impl Context {
         debug_assert_eq!(input_bytes % BLOCK_LEN, 0);
         debug_assert!(input_bytes > 0);
 
-        let input = input.as_ptr() as *const [u8; BLOCK_LEN];
+        let input = input.as_ptr().cast::<[u8; BLOCK_LEN]>();
+        // SAFETY:
+        // - `[[u8; BLOCK_LEN]]` has the same bit validity as `[u8]`.
+        // - `[[u8; BLOCK_LEN]]` has the same alignment requirement as `[u8]`.
+        // - `input_bytes / BLOCK_LEN` ensures that the total length in bytes of
+        //   the new `[[u8; BLOCK_LEN]]` will not be longer than the original
+        //   `[u8]`.
         let input = unsafe { core::slice::from_raw_parts(input, input_bytes / BLOCK_LEN) };
 
-        // Although these functions take `Xi` and `h_table` as separate
-        // parameters, one or more of them might assume that they are part of
-        // the same `ContextInner` structure.
         let xi = &mut self.inner.Xi;
         let h_table = &self.inner.Htable;
 
@@ -241,7 +242,7 @@ impl Context {
     }
 
     #[cfg(target_arch = "x86_64")]
-    pub(super) fn is_avx2(&self) -> bool {
+    pub(super) fn is_avx(&self) -> bool {
         match detect_implementation(self.cpu_features) {
             Implementation::CLMUL => has_avx_movbe(self.cpu_features),
             _ => false,
@@ -252,7 +253,7 @@ impl Context {
 // The alignment is required by non-Rust code that uses `GCM128_CONTEXT`.
 #[derive(Clone)]
 #[repr(C, align(16))]
-struct HTable {
+pub(super) struct HTable {
     Htable: [u128; HTABLE_LEN],
 }
 
@@ -286,12 +287,12 @@ impl From<Xi> for Block {
 // Some assembly language code, in particular the MOVEBE+AVX2 X86-64
 // implementation, requires this exact layout.
 #[repr(C, align(16))]
-pub(super) struct ContextInner {
+struct ContextInner {
     Xi: Xi,
-    _unused: Block,
     Htable: HTable,
 }
 
+#[allow(clippy::upper_case_acronyms)]
 enum Implementation {
     #[cfg(any(
         target_arch = "aarch64",
@@ -319,16 +320,16 @@ fn detect_implementation(cpu_features: cpu::Features) -> Implementation {
     )))]
     let _cpu_features = cpu_features;
 
-    #[cfg(any(
-        target_arch = "aarch64",
-        target_arch = "arm",
-        target_arch = "x86_64",
-        target_arch = "x86"
-    ))]
+    #[cfg(any(target_arch = "aarch64", target_arch = "arm"))]
     {
-        if (cpu::intel::FXSR.available(cpu_features)
-            && cpu::intel::PCLMULQDQ.available(cpu_features))
-            || cpu::arm::PMULL.available(cpu_features)
+        if cpu::arm::PMULL.available(cpu_features) {
+            return Implementation::CLMUL;
+        }
+    }
+
+    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+    {
+        if cpu::intel::FXSR.available(cpu_features) && cpu::intel::PCLMULQDQ.available(cpu_features)
         {
             return Implementation::CLMUL;
         }

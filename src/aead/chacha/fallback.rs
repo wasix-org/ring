@@ -16,7 +16,6 @@
 // Adapted from the BoringSSL crypto/chacha/chacha.c.
 
 use super::{Counter, Key, BLOCK_LEN};
-use crate::polyfill::ChunksFixedMut;
 use core::ops::RangeFrom;
 
 pub(super) fn ChaCha20_ctr32(
@@ -50,9 +49,9 @@ pub(super) fn ChaCha20_ctr32(
         state[12] += 1;
 
         let todo = core::cmp::min(BLOCK_LEN, in_out_len);
-        for i in 0..todo {
+        for (i, &b) in buf[..todo].iter().enumerate() {
             let input = unsafe { *input.add(i) };
-            let b = input ^ buf[i];
+            let b = input ^ b;
             unsafe { *output.add(i) = b };
         }
 
@@ -82,9 +81,10 @@ fn chacha_core(output: &mut [u8; BLOCK_LEN], input: &State) {
         *x = x.wrapping_add(*input);
     }
 
-    for (output, &x) in ChunksFixedMut::<[u8; 4]>::chunks_fixed_mut(output).zip(x.iter()) {
-        *output = u32::to_le_bytes(x)
-    }
+    output
+        .chunks_exact_mut(core::mem::size_of::<u32>())
+        .zip(x.iter())
+        .for_each(|(output, &x)| output.copy_from_slice(&x.to_le_bytes()));
 }
 
 #[inline(always)]
