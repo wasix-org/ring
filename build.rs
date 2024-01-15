@@ -317,7 +317,8 @@ fn ring_build_rs_main() {
         let wasm_libs = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("wasm-libs");
         if wasm_libs.exists() {
             let src_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
-            println!("cargo:rustc-link-lib=static=ring_core_dev_");
+            println!("cargo:rustc-env=RING_CORE_PREFIX={}", &ring_core_prefix());
+            println!("cargo:rustc-link-lib=static=ring_core_0_17_7_");
             println!("cargo:rustc-link-search=native={}/wasm-libs", src_dir);
 
             println!("cargo:rustc-link-lib=static=clang_rt.builtins-wasm32");
@@ -325,7 +326,7 @@ fn ring_build_rs_main() {
             return;
         }
     }
-
+    
     let is_git = std::fs::metadata(".git").is_ok();
 
     // Published builds are always built in release mode.
@@ -522,9 +523,8 @@ fn new_build(target: &Target, include_dir: &Path) -> cc::Build {
     if target_os == "wasi" {
         let wasi_sdk_path =
             &std::env::var("WASI_SDK_DIR").expect("missing environment variable: WASI_SDK_DIR");
-        b.compiler(format!("{}/bin/clang", wasi_sdk_path).as_str());
-        b.archiver(format!("{}/bin/llvm-ar", wasi_sdk_path).as_str());
-        b.flag(format!("--sysroot={}/share/wasi-sysroot", wasi_sdk_path).as_str());
+        b.flag(format!("--sysroot={wasi_sdk_path}").as_str());
+        b.flag("-I").flag(format!("{wasi_sdk_path}/include").as_str());
     }
     configure_cc(&mut b, target, include_dir);
     b
