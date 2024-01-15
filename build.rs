@@ -435,12 +435,6 @@ fn build_c_code(
     ring_core_prefix: &str,
     use_pregenerated: bool,
 ) {
-    #[cfg(not(feature = "wasm32_c"))]
-    {
-        if target.arch == WASM32 {
-            return;
-        }
-    }
     println!("cargo:rustc-env=RING_CORE_PREFIX={}", ring_core_prefix);
 
     let asm_target = ASM_TARGETS.iter().find(|asm_target| {
