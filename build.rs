@@ -317,10 +317,12 @@ fn ring_build_rs_main() {
         let wasm_libs = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("wasm-libs");
         if wasm_libs.exists() {
             println!("cargo:rustc-link-search=native={}", wasm_libs.as_os_str().to_string_lossy());
-            //println!("cargo:rustc-env=RING_CORE_PREFIX={}", &ring_core_prefix());
-            println!("cargo:rustc-env=RING_CORE_PREFIX=ring_core_dev_");
+            //println!("cargo:rustc-env=RING_CORE_PREFIX=ring_core_dev_");
+            //println!("cargo:rustc-link-lib=static=clang_rt.builtins-wasm32");
+            //println!("cargo:rustc-link-lib=static=ring_core_dev_");
+            println!("cargo:rustc-env=RING_CORE_PREFIX=ring_core_0_17_7_");
             println!("cargo:rustc-link-lib=static=clang_rt.builtins-wasm32");
-            println!("cargo:rustc-link-lib=static=ring_core_dev_");
+            println!("cargo:rustc-link-lib=static=ring_core_0_17_7_");
             return;
         }
     }
