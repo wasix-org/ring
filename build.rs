@@ -319,7 +319,7 @@ fn ring_build_rs_main() {
             println!("cargo:rustc-link-search=native={}", wasm_libs.as_os_str().to_string_lossy());
             println!("cargo:rustc-env=RING_CORE_PREFIX={}", &ring_core_prefix());
             println!("cargo:rustc-link-lib=static=clang_rt.builtins-wasm32");
-            println!("cargo:rustc-link-lib=static=ring_core_0_17_7_");
+            println!("cargo:rustc-link-lib=static=ring_core_dev_");
             return;
         }
     }
