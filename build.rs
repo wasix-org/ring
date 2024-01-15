@@ -413,6 +413,7 @@ fn pregenerate_asm_main() {
     }
 }
 
+#[derive(Debug)]
 struct Target {
     arch: String,
     os: String,
@@ -519,6 +520,7 @@ fn build_c_code(
 
 fn new_build(target: &Target, include_dir: &Path) -> cc::Build {
     let mut b = cc::Build::new();
+    b.compiler("clang");
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
     if target_os == "wasi" {
         let wasi_sdk_path =
@@ -630,7 +632,7 @@ fn configure_cc(c: &mut cc::Build, target: &Target, include_dir: &Path) {
     // Allow cross-compiling without a target sysroot for these targets.
     //
     // poly1305_vec.c requires <emmintrin.h> which requires <stdlib.h>.
-    if (target.arch == "wasm32" && target.os == "unknown")
+    if (target.arch == "wasm32")
         || (target.os == "linux" && target.is_musl && target.arch != "x86_64")
     {
         if let Ok(compiler) = c.try_get_compiler() {
