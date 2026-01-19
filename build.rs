@@ -602,7 +602,9 @@ fn configure_cc(c: &mut cc::Build, target: &Target, include_dir: &Path) {
     // Allow cross-compiling without a target sysroot for these targets.
     //
     // poly1305_vec.c requires <emmintrin.h> which requires <stdlib.h>.
-    if (target.arch == "wasm32")
+    //
+    // When targeting WASI the sysroot should always contain a standard library
+    if (target.arch == "wasm32" && target.os != "wasi")
         || (target.os == "linux" && target.is_musl && target.arch != "x86_64")
     {
         if let Ok(compiler) = c.try_get_compiler() {
