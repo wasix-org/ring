@@ -13,7 +13,7 @@ license-file = "LICENSE"
 name = "ring"
 readme = "doc/link-to-readme.md"
 repository = "https://github.com/jedisct1/ring-wasi"
-version = "0.16.20"
+version = "0.16.20+wasix.1"
 
 # Prevent multiple versions of *ring* from being linked into the same program.
 links = "ring_core_dev"
