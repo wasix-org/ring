@@ -14,7 +14,7 @@ repository = "https://github.com/briansmith/ring"
 rust-version = "1.61.0"
 
 # Keep in sync with `links` below.
-version = "0.17.7"
+version = "0.17.7+wasix.1"
 
 # Keep in sync with `version` above.
 #

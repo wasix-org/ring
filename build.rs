@@ -801,6 +801,8 @@ fn ring_core_prefix() -> String {
     let computed = {
         let name = std::env::var("CARGO_PKG_NAME").unwrap();
         let version = std::env::var("CARGO_PKG_VERSION").unwrap();
+        // Build metadata (e.g. `+wasix.1`) is not part of the symbol prefix.
+        let version = version.split('+').next().unwrap();
         name + "_core_" + &version.replace(&['-', '.'][..], "_")
     };
 
